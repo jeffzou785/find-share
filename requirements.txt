@@ -1,0 +1,11 @@
+akshare>=1.18
+pandas>=2.0
+numpy>=1.24
+duckdb>=0.10
+pdfplumber>=0.10
+requests>=2.31
+tenacity>=8.2
+python-dotenv>=1.0
+tqdm>=4.65
+pyarrow>=14.0
+jieba>=0.42

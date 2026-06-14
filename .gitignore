@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# 数据（不入库）
+data/
+*.duckdb
+*.duckdb.wal
+
+# 环境配置
+.env
+
+# 研报（用户私有，不入库）
+research_reports/
+
+# 临时文件
+*.log
+.DS_Store
+/tmp/
+
+# Claude Code
+.claude/
