@@ -42,9 +42,11 @@ DEFAULT_PE_TTM_MAX = 25.0
 @dataclass
 class StrategyConfig:
     overseas_ratio_min: float = DEFAULT_OVERSEAS_RATIO_MIN
+    overseas_ratio_max: float = 0.95  # 海外占比 >95% 视为解析异常（抓成总营收）
     overseas_yoy_min: float = DEFAULT_OVERSEAS_YOY_MIN
     pe_ttm_max: float = DEFAULT_PE_TTM_MAX
     require_overseas_yoy: bool = False  # 当前只入库 1 年数据时跳过增速校验
+    sanity_check_yoy: bool = True  # 用同比做数据合理性过滤（|yoy|>5 或 <-80% 视为单位识别错）
 
 
 def run_overseas_champion(
@@ -122,8 +124,15 @@ def run_overseas_champion(
     # 应用阈值
     mask = (
         (df["overseas_ratio"] >= config.overseas_ratio_min)
+        & (df["overseas_ratio"] < config.overseas_ratio_max)
         & (df["pe_ttm_current"] <= config.pe_ttm_max)
     )
+    # 数据合理性过滤：同比异常（|yoy|>5 或 <-80%）视为单位识别错
+    if config.sanity_check_yoy and "overseas_yoy" in df.columns:
+        yoy = df["overseas_yoy"]
+        anomaly = yoy.notna() & ((yoy.abs() > 5) | (yoy < -0.8))
+        mask &= ~anomaly
+    # 启用同比阈值（严格模式）
     if config.require_overseas_yoy and "overseas_yoy" in df.columns:
         mask &= df["overseas_yoy"].fillna(-1) >= config.overseas_yoy_min
 

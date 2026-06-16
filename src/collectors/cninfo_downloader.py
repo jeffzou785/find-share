@@ -103,18 +103,15 @@ class CnInfoDownloader:
         r.raise_for_status()
         payload = r.json()
         anns = payload.get("announcements") or []
-        # 找中文版的"年度报告"（非英文版、非摘要）
-        keyword = f"{year}年年度报告"
+        # 找中文版的"年度报告"（非英文版、非摘要、非更正/修订/已取消）
+        # cninfo 标题命名不统一，两种主流写法都接受：
+        #   "XX公司2025年年度报告"（多数）
+        #   "XX公司2025年度报告"（少数，如风神轮胎）
+        keywords = (f"{year}年年度报告", f"{year}年度报告")
+        skip_tokens = ("英文", "摘要", "已取消", "更正", "修订", "补充")
         for a in anns:
             title = a.get("announcementTitle", "")
-            if title == keyword or (
-                keyword in title and "英文" not in title and "摘要" not in title
-            ):
-                return a
-        # 兜底：第一个非摘要非英文
-        for a in anns:
-            title = a.get("announcementTitle", "")
-            if "摘要" not in title and "英文" not in title and f"{year}年年度报告" in title:
+            if any(k in title for k in keywords) and not any(t in title for t in skip_tokens):
                 return a
         return None
 

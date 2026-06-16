@@ -7,7 +7,7 @@ A 股选股框架：基于公开数据的量化初筛 + 研报深度分析的两
 | 策略 | 逻辑 | 当前命中 |
 |------|------|---------|
 | **消费股反转** | 食品饮料/家电/美容护理/商贸零售 + PE 分位<30% + 扣非同比>30% | 24 只 |
-| **出海隐形冠军** | 机械/汽车/化工 + 海外收入占比>30% + PE<25 | 6 只已入库 + 50 只扩展池候选 |
+| **出海隐形冠军** | 机械/汽车/化工 + 海外收入占比>30% + PE<25（2025 年报基准 + 2024 同比）| **24 只命中** + 50 只扩展池候选 |
 
 > 策略二（医药量价齐升）按需暂缓，可直接复用策略一的代码模板补齐。
 
@@ -83,7 +83,7 @@ python3 scripts/run_phase2_strategy1.py
 
 # 3. 跑策略三（出海隐形冠军）
 python3 scripts/run_phase3_strategy3.py
-# → 输出 data/exports/target_pool_overseas.csv（6 只命中 + 50 只扩展池）
+# → 输出 data/exports/target_pool_overseas.csv（24 只命中 + 50 只扩展池）
 ```
 
 ---
@@ -126,7 +126,7 @@ python3 scripts/research_rag_cli.py index
 
 ```bash
 cat data/exports/target_pool.csv                       # 策略一 24 只
-cat data/exports/target_pool_overseas.csv              # 策略三 6 只
+cat data/exports/target_pool_overseas.csv              # 策略三 24 只
 cat data/exports/overseas_extension_candidates.csv     # 策略三扩展池 50 只
 open data/exports/strategy1_result.md
 open data/exports/strategy3_result.md
@@ -137,7 +137,7 @@ open data/exports/strategy3_result.md
 ```bash
 # 1. 先看现有命中
 cat data/exports/target_pool_overseas.csv
-# → 已有 6 只（三一、潍柴、中联、玲珑、杰克、福耀）
+# → 已有 24 只（三一、潍柴、中联、玲珑、杰克、福耀等）
 
 # 2. 看扩展池候选（PE<25 但年报未入库的 50 只）
 head -20 data/exports/overseas_extension_candidates.csv
@@ -157,17 +157,23 @@ python3 scripts/research_rag_cli.py search "宇通客车 海外订单" --stock 6
 
 ## 待升级项（按优先级）
 
-### P0 - 阻塞策略三完整跑通
+### P0 - ✅ 已完成（2026-06-15）
 
-| 功能 | 当前状态 | 升级路径 |
-|------|---------|---------|
-| **海外收入数据覆盖** | 仅 10 家入库 | `python3 scripts/download_annual_reports.py --extension --limit 50` |
-| **海外收入同比增速** | 仅入库 2024 一年 | `python3 scripts/download_annual_reports.py --year 2023` 拉去年年报对比 |
+| 功能 | 完成内容 |
+|------|---------|
+| **海外收入数据覆盖** | 56 只候选全部下载 2024 + 2025 年报，入库 47 + 46 = **93 条记录**，覆盖 56 只股票 |
+| **海外收入同比增速** | 同一只股票同时入库 2024 + 2025，**43 只有同比数据**；策略三从原 6 只命中扩展到 **24 只** |
+| **cninfo 标题变体兼容** | `cninfo_downloader.py` 同时识别 `{year}年年度报告`（多数）与 `{year}年度报告`（如风神轮胎）|
+| **策略层数据合理性过滤** | `overseas_champion.py` 加 `overseas_ratio_max=0.95`（剔除抓成总营收）+ `sanity_check_yoy`（同比 \|yoy\|>5 或 <-80% 视为单位识别错）|
 
 ### P1 - 提升精度
 
 | 功能 | 当前状态 | 升级路径 |
 |------|---------|---------|
+| **`annual_report_parser` 单位识别** | 部分公司单位识别错（如 600262 元→万元、001333 万元→元）| 改用"同股票多年数据交叉校验"自动修正单位 |
+| **PDF 跨页数字断字** | 如 601233 桐昆股份（74 亿被截成 0.07 亿）| 解析器加跨页连接逻辑 |
+| **多候选记录优选** | 部分年报取到总营收而非境外收入（000680、603969）| 加上下文词过滤（"营业收入"/"主营业务收入"排除）|
+| **`financials` / `pe_pb_history` 表落库** | 仍为空（每次跑策略实时拉 AkShare）| bootstrap 阶段入库，减少网络依赖 |
 | **研报 RAG 语义质量** | TF-IDF 关键词匹配 | 装 sentence-transformers + bge-small-zh（~100MB 模型）|
 | **策略一行业分类** | "美容护理"覆盖不全 | 手工建成分股清单 |
 | **PE 分位时间窗口** | 固定 5 年 | 给 `StrategyConfig` 加 `history_years` 参数 |
@@ -185,8 +191,9 @@ python3 scripts/research_rag_cli.py search "宇通客车 海外订单" --stock 6
 ### 已知问题
 
 - 年报跨页同金额数据未合并（如比亚迪 2 条不同口径境外收入）
-- 海外收入合理性校验仅做"超过 5 万亿则除 1 万"，不够智能
+- 海外收入合理性校验仅做"超过 5 万亿则除 1 万"，不够智能；策略三已加 ratio<0.95 + 同比异常过滤兜底，但金额绝对值错的少数股票（如 600262 单位识别错）仍可能漏过
 - 没有日志系统，全用 print
+- `import_overseas_revenue.py` 不带 `-u` 时 print 被 pipe 缓冲，看不到实时进度
 
 ---
 
