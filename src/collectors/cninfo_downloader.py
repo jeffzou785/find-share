@@ -1,6 +1,6 @@
-"""从 cninfo 下载上市公司年报 PDF。
+"""从 cninfo 下载上市公司财报 PDF（年报 / 半年报 / 季报）。
 
-cninfo 是最权威的年报披露源，所有 A 股年报都在此披露。
+cninfo 是最权威的财报披露源，所有 A 股定期报告都在此披露。
 PDF 下载链路：
 1. POST /new/hisAnnouncement/query 拿到 adjunctUrl
 2. GET http://static.cninfo.com.cn/{adjunctUrl} 下载 PDF
@@ -26,6 +26,41 @@ COLUMN_MAP = {
     "sse": "sse",  # 上交所主板
     "szse": "szse",  # 深交所
 }
+
+# 定期报告 → cninfo category 参数
+REPORT_CATEGORY: dict[str, str] = {
+    "annual": "category_ndbg_szsh",     # 年度报告
+    "half_year": "category_bndbg_szsh", # 半年度报告
+    "q1": "category_yjdbg_szsh",        # 一季度报告
+    "q3": "category_sjdbg_szsh",        # 三季度报告
+}
+
+# 定期报告 → 标题关键词（多种命名变体都覆盖）
+REPORT_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "annual": ("年年度报告", "年度报告"),
+    "half_year": ("年半年度报告", "半年度报告"),
+    "q1": ("年第一季度报告", "年一季度报告", "年一季报"),
+    "q3": ("年第三季度报告", "年三季度报告", "年三季报"),
+}
+
+# 定期报告披露窗口（用于 cninfo seDate 过滤）
+# 年份 N 的报告实际披露时间窗口
+REPORT_SEARCH_WINDOW: dict[str, tuple[int, int, int, int]] = {
+    # (start_month, start_day, end_month, end_day) 相对年份 N 的偏移
+    # 年报 N：N+1 年 1-12 月
+    "annual": (1, 1, 12, 31),
+    # 半年报 N：N 年 7-12 月（实际多在 8 月披露）
+    "half_year": (7, 1, 12, 31),
+    # 一季报 N：N 年 4-6 月
+    "q1": (4, 1, 6, 30),
+    # 三季报 N：N 年 10-12 月
+    "q3": (10, 1, 12, 31),
+}
+
+# 所有报告类型通用排除词（英文版/摘要/已取消/更正/修订/补充）
+REPORT_SKIP_TOKENS: tuple[str, ...] = (
+    "英文", "摘要", "已取消", "更正", "修订", "补充",
+)
 
 
 class CnInfoDownloader:
@@ -74,22 +109,39 @@ class CnInfoDownloader:
     def query_annual_report(
         self, code: str, year: int = 2024
     ) -> Optional[dict]:
-        """查询单只股票指定年份的年报。返回 adjunctUrl / 标题 等。"""
+        """查询单只股票指定年份的年报。向后兼容入口。"""
+        return self.query_report(code, year, report_type="annual")
+
+    def query_report(
+        self, code: str, year: int, report_type: str = "annual"
+    ) -> Optional[dict]:
+        """查询单只股票指定年份的定期报告（annual/half_year/q1/q3）。
+
+        返回 cninfo announcement dict（含 adjunctUrl、announcementTitle 等）。
+        """
+        if report_type not in REPORT_CATEGORY:
+            raise ValueError(
+                f"未知 report_type={report_type}，必须为 {list(REPORT_CATEGORY)}"
+            )
         code = str(code).zfill(6)
         orgid = self.get_orgid(code)
         column = "sse" if code.startswith("6") else (
             "szse" if code.startswith(("0", "3")) else "bj"
         )
 
-        se_start = f"{year + 1}-01-01"
-        se_end = f"{year + 1}-12-31"
+        # 搜索窗口：年报在 N+1 年披露，季报/半年报在 N 当年披露
+        sm, sd, em, ed = REPORT_SEARCH_WINDOW[report_type]
+        search_year = year + 1 if report_type == "annual" else year
+        se_start = f"{search_year}-{sm:02d}-{sd:02d}"
+        se_end = f"{search_year}-{em:02d}-{ed:02d}"
+
         data = {
             "pageNum": "1",
-            "pageSize": "10",
+            "pageSize": "30",
             "column": column,
             "tabName": "fulltext",
             "stock": f"{code},{orgid}",
-            "category": "category_ndbg_szsh",
+            "category": REPORT_CATEGORY[report_type],
             "seDate": f"{se_start}~{se_end}",
         }
 
@@ -103,15 +155,13 @@ class CnInfoDownloader:
         r.raise_for_status()
         payload = r.json()
         anns = payload.get("announcements") or []
-        # 找中文版的"年度报告"（非英文版、非摘要、非更正/修订/已取消）
-        # cninfo 标题命名不统一，两种主流写法都接受：
-        #   "XX公司2025年年度报告"（多数）
-        #   "XX公司2025年度报告"（少数，如风神轮胎）
-        keywords = (f"{year}年年度报告", f"{year}年度报告")
-        skip_tokens = ("英文", "摘要", "已取消", "更正", "修订", "补充")
+
+        keywords = tuple(f"{year}{kw}" for kw in REPORT_KEYWORDS[report_type])
         for a in anns:
             title = a.get("announcementTitle", "")
-            if any(k in title for k in keywords) and not any(t in title for t in skip_tokens):
+            if any(k in title for k in keywords) and not any(
+                t in title for t in REPORT_SKIP_TOKENS
+            ):
                 return a
         return None
 
@@ -122,18 +172,33 @@ class CnInfoDownloader:
         save_dir: Path | None = None,
         skip_if_exists: bool = True,
     ) -> Path:
-        """下载年报 PDF。返回本地 PDF 路径。"""
+        """下载年报 PDF。向后兼容入口。"""
+        return self.download_report(
+            code, year, report_type="annual",
+            save_dir=save_dir, skip_if_exists=skip_if_exists,
+        )
+
+    def download_report(
+        self,
+        code: str,
+        year: int,
+        report_type: str = "annual",
+        save_dir: Path | None = None,
+        skip_if_exists: bool = True,
+    ) -> Path:
+        """下载定期报告 PDF（annual/half_year/q1/q3）。返回本地 PDF 路径。"""
         save_dir = save_dir or config.ANNUAL_REPORT_PDF_DIR
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        filename = f"{code}_{year}_annual_report.pdf"
+        filename = f"{code}_{year}_{report_type}.pdf"
         save_path = save_dir / filename
         if skip_if_exists and save_path.exists() and save_path.stat().st_size > 100_000:
             return save_path
 
-        ann = self.query_annual_report(code, year)
+        ann = self.query_report(code, year, report_type=report_type)
         if not ann:
-            raise FileNotFoundError(f"{code} 找不到 {year} 年年度报告")
+            type_cn = {"annual": "年报", "half_year": "半年报", "q1": "一季报", "q3": "三季报"}[report_type]
+            raise FileNotFoundError(f"{code} 找不到 {year} {type_cn}")
 
         adjunct_url = ann["adjunctUrl"]
         url = CNINFO_DOWNLOAD_HOST + adjunct_url
