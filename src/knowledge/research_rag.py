@@ -191,6 +191,42 @@ class ResearchRAG:
             rows = conn.execute("SELECT DISTINCT source_pdf FROM chunks").fetchall()
         return {r[0] for r in rows if r[0]}
 
+    def ingest_pdf(
+        self,
+        pdf_path: Path | str,
+        metadata: dict | None = None,
+    ) -> int:
+        """索引单份研报 PDF。返回新增 chunk 数。
+
+        metadata 可显式传入 stock_code / stock_name / broker / report_date，
+        不传则从文件名解析（parse_pdf_to_chunks 默认逻辑）。
+        若该 PDF 已索引（按文件名去重），返回 0。
+        """
+        pdf_path = Path(pdf_path)
+        source_key = pdf_path.name
+        if source_key in self._get_indexed_pdfs():
+            return 0
+
+        chunks = parse_pdf_to_chunks(pdf_path)
+        if not chunks:
+            return 0
+
+        # metadata 覆盖文件名解析
+        if metadata:
+            for c in chunks:
+                if metadata.get("stock_code"):
+                    c.stock_code = str(metadata["stock_code"])
+                if metadata.get("stock_name"):
+                    c.stock_name = str(metadata["stock_name"])
+                if metadata.get("broker"):
+                    c.broker = str(metadata["broker"])
+                if metadata.get("report_date"):
+                    c.report_date = str(metadata["report_date"])
+
+        self._add_chunks(source_key, chunks)
+        self._build_index()
+        return len(chunks)
+
     def index_directory(self, pdf_dir: Path | str, force_refresh: bool = False) -> int:
         """索引整个研报目录。返回新增 chunk 数。"""
         pdf_dir = Path(pdf_dir)
