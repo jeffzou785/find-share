@@ -7,7 +7,6 @@ AkShare 的 stock_board_industry_cons_em（东财行业成分股）走 push2.eas
 
 策略需要的几个申万行业：
 - 策略一（消费）：食品饮料 / 家用电器 / 美容护理 / 商贸零售
-- 策略二（医药）：医疗器械 / 化学制药 / 生物制品
 - 策略三（出海）：机械设备 / 汽车 / 基础化工
 
 注意：
@@ -21,17 +20,9 @@ SW_FIRST_TO_SINA: dict[str, list[str]] = {
     "家用电器": ["new_jdhy"],
     "美容护理": ["new_fzxl"],
     "商贸零售": ["new_sybh", "new_wzwm"],
-    "医药生物": ["new_swzz", "new_ylqx"],
     "机械设备": ["new_jxhy"],
     "汽车": ["new_qczz"],
     "基础化工": ["new_hghy", "new_hqhy"],
-}
-
-# 申万二级 → 新浪行业代码（仅策略二需要的部分）
-SW_SECOND_TO_SINA: dict[str, list[str]] = {
-    "医疗器械": ["new_ylqx"],
-    "化学制药": ["new_swzz"],
-    "生物制品": ["new_swzz"],
 }
 
 # 反向映射：新浪行业代码 → 申万一级行业名

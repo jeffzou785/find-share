@@ -164,7 +164,7 @@ def _write_md_report(
         "",
         "1. 人工抽查命中股票，确认逻辑合理性",
         "2. 对感兴趣的标的，调用 `python scripts/run_phase0_poc.py` 拉年报附注数据",
-        "3. 后续 Phase 3+ 将加入策略二（医药）/ 策略三（出海）的筛选",
+        "3. 后续 Phase 3+ 将加入策略三（出海隐形冠军）的筛选",
     ]
     md_path.write_text("\n".join(lines), encoding="utf-8")
 
