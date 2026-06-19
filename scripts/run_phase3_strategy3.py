@@ -76,6 +76,12 @@ def main() -> int:
                 "overseas_revenue_yi", "revenue_yi", "overseas_ratio",
                 "overseas_yoy", "overseas_data_year",
                 "pe_ttm_current", "pe_percentile",
+                # 扩展条件字段（cashflow + leverage 默认开启）
+                "ocf_net_yi", "net_profit_yi", "ocf_to_profit",
+                "total_liabilities_yi", "total_assets_yi", "debt_ratio",
+                # 一致预期（默认关闭，需先批量拉研报）
+                "eps_current", "eps_forecast_y1", "eps_forecast_y2",
+                "eps_y1_growth", "eps_y2_growth",
             ]
             result = result[[c for c in cols if c in result.columns]]
             result.insert(0, "strategy", "出海隐形冠军")
@@ -191,12 +197,15 @@ def _write_md_report(
         "| 海外业务 | 年报境外收入占总营收 ≥ 30% |",
         "| 海外增速 | 境外收入同比 ≥ 40%（可选，需 2 年数据）|",
         "| 估值 | PE-TTM < 25 |",
+        "| 现金流质量 | 经营性现金流净额 / 净利润 ≥ 0.7（默认开启）|",
+        "| 资产负债率 | 总负债 / 总资产 < 60%（默认开启）|",
+        "| 一致预期增速 | 东财研报 EPS Y1/Y2 增速 ≥ 15%（默认关闭，需先批量拉研报）|",
         "| 质量 | 剔除 ST / 金融 / 地产 |",
         "",
         "## 命中清单",
         "",
-        "| 代码 | 名称 | 行业 | 境外收入(亿) | 总营收(亿) | 占比 | 同比 | PE |",
-        "|------|------|------|------------|-----------|------|------|-----|",
+        "| 代码 | 名称 | 行业 | 境外收入(亿) | 总营收(亿) | 占比 | 同比 | PE | 现金流/净利 | 负债率 |",
+        "|------|------|------|------------|-----------|------|------|-----|------------|--------|",
     ]
     for _, r in result.iterrows():
         yoy = (
@@ -204,10 +213,21 @@ def _write_md_report(
             if pd.notna(r.get("overseas_yoy"))
             else "N/A"
         )
+        ocf_ratio = (
+            f"{r['ocf_to_profit']:.2f}"
+            if pd.notna(r.get("ocf_to_profit"))
+            else "N/A"
+        )
+        debt = (
+            f"{r['debt_ratio'] * 100:.1f}%"
+            if pd.notna(r.get("debt_ratio"))
+            else "N/A"
+        )
         lines.append(
             f"| {r['code']} | {r['name']} | {r['sw_first']} | "
             f"{r['overseas_revenue_yi']:.1f} | {r['revenue_yi']:.1f} | "
-            f"{r['overseas_ratio'] * 100:.1f}% | {yoy} | {r['pe_ttm_current']:.1f} |"
+            f"{r['overseas_ratio'] * 100:.1f}% | {yoy} | {r['pe_ttm_current']:.1f} | "
+            f"{ocf_ratio} | {debt} |"
         )
 
     if not extension.empty:
