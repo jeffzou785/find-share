@@ -1,6 +1,12 @@
 """年报附注解析器（Phase 0 POC 核心）。
 
 从上市公司年报 PDF 中提取"分地区营业收入"附注里的境外/海外收入。
+
+P1-3 增强：
+- 排除"合计/小计/总计/营业收入合计/主营业务收入合计"等总营收行
+- 同页同时出现境内+境外时置信度 high
+- 跨页表格单元格内的 \\n 断字修复
+- ParseResult.parse_warnings 记录单位识别疑点
 """
 from __future__ import annotations
 
@@ -27,6 +33,8 @@ class OverseasRevenueRecord:
     currency: str = "CNY"
     source_page: int = -1
     raw_text: str = ""  # 用于调试的原文片段
+    is_total_row: bool = False  # True 表示该行疑似总营收/合计行（P1-3）
+    confidence: str = "medium"  # high / medium / low（P1-3）
 
 
 @dataclass
@@ -38,6 +46,7 @@ class ParseResult:
     records: list[OverseasRevenueRecord] = field(default_factory=list)
     error: str = ""
     notes: list[str] = field(default_factory=list)
+    parse_warnings: list[str] = field(default_factory=list)  # P1-3
 
 
 # 关键词匹配：分地区营业收入附注的标题
@@ -67,6 +76,19 @@ OVERSEAS_KEYWORDS = [
 
 # 国内关键词（用于校验：如果表格里同时有"境内"和"境外"，可信度高）
 DOMESTIC_KEYWORDS = ["境内", "国内", "华北", "华东", "华南", "华中", "西南", "西北", "东北"]
+
+# 总营收/合计行排除词（P1-3）：行命中任一词且同时含境外关键词时，标记 is_total_row
+# 注：单独的"合计"匹配过宽（如"境外小计"），但实际年报里"境外合计"罕见；
+# 配合"分行业/分产品/分客户"已有的硬过滤，加上下面这些组合词后能挡住绝大多数误抓
+TOTAL_ROW_KEYWORDS = [
+    "营业收入合计",
+    "主营业务收入合计",
+    "营业总收入",
+    "总收入",
+    "合计",
+    "小计",
+    "总计",
+]
 
 # 单位换算到元
 UNIT_TO_YUAN: dict[str, float] = {
@@ -183,56 +205,84 @@ def _validate_revenue_yuan(revenue_yuan: float) -> float:
 def _extract_from_page(
     tables: list, text: str, page_num: int, page_unit: str = "元"
 ) -> list[OverseasRevenueRecord]:
-    """从单页的表格和文本中提取境外收入记录。"""
+    """从单页的表格和文本中提取境外收入记录。
+
+    返回的记录都带 confidence：
+    - high  : 该页同时出现境内+境外关键词（强证据是分地区表）
+    - medium: 仅境外关键词
+    - low   : 仅靠"国际"等边缘词匹配
+    """
     records: list[OverseasRevenueRecord] = []
+
+    # 该页是否同时含境内+境外（决定 confidence）
+    has_domestic = any(kw in text for kw in DOMESTIC_KEYWORDS)
+    has_overseas_section = any(kw in text for kw in OVERSEAS_KEYWORDS)
+    page_confidence = "high" if has_domestic and has_overseas_section else "medium"
+
+    def _make_record(
+        region: str, revenue: float, unit: str,
+        raw_text: str, page_num: int, page_confidence: str,
+        is_total_row: bool,
+    ) -> OverseasRevenueRecord:
+        revenue_yuan = _validate_revenue_yuan(revenue * UNIT_TO_YUAN.get(unit, 1.0))
+        # 总营收行降级 confidence 为 low
+        confidence = "low" if is_total_row else page_confidence
+        # "国际" 这种边缘匹配也降级
+        if region == "国际":
+            confidence = "low" if confidence == "medium" else confidence
+        return OverseasRevenueRecord(
+            stock_code="",
+            report_period="",
+            region_name=region,
+            revenue=revenue,
+            revenue_unit=unit,
+            revenue_yuan=revenue_yuan,
+            source_page=page_num,
+            raw_text=raw_text[:160],
+            is_total_row=is_total_row,
+            confidence=confidence,
+        )
 
     # 优先：从表格提取（表格结构化最好）
     for table in tables:
         for row in table:
-            row_text = " ".join(str(c) for c in row if c)
+            # 跨页断字修复：单元格内的 \n 替换为空，再拼接
+            cleaned_cells = [
+                ("" if c is None else str(c).replace("\n", "").replace("\r", ""))
+                for c in row
+            ]
+            row_text = " ".join(c for c in cleaned_cells if c)
             region = _match_overseas_region(row_text)
-            if region:
-                # 校验：同一表格行不应是"分行业/分产品"标题
-                if "分行业" in row_text or "分产品" in row_text or "分客户" in row_text:
-                    continue
-                revenue, unit = _parse_revenue_from_row(row, page_unit)
-                if revenue is not None:
-                    revenue_yuan = _validate_revenue_yuan(revenue * UNIT_TO_YUAN.get(unit, 1.0))
-                    records.append(
-                        OverseasRevenueRecord(
-                            stock_code="",
-                            report_period="",
-                            region_name=region,
-                            revenue=revenue,
-                            revenue_unit=unit,
-                            revenue_yuan=revenue_yuan,
-                            source_page=page_num,
-                            raw_text=row_text[:120],
-                        )
-                    )
+            if not region:
+                continue
+            # 排除：分行业/分产品/分客户 标题行
+            if "分行业" in row_text or "分产品" in row_text or "分客户" in row_text:
+                continue
+            # P1-3：总营收/合计行标记（仍抓取，但 is_total_row=True；上游选择时可剔除）
+            is_total_row = any(kw in row_text for kw in TOTAL_ROW_KEYWORDS)
+            revenue, unit = _parse_revenue_from_row(cleaned_cells, page_unit)
+            if revenue is not None:
+                records.append(_make_record(
+                    region, revenue, unit, row_text, page_num,
+                    page_confidence, is_total_row,
+                ))
 
     # 退路：从纯文本按行提取（pdfplumber 未识别出表格时）
     if not records:
         for line in text.split("\n"):
-            region = _match_overseas_region(line)
-            if region:
-                if "分行业" in line or "分产品" in line or "分客户" in line:
-                    continue
-                revenue, unit = _parse_revenue_from_row(line, page_unit)
-                if revenue is not None:
-                    revenue_yuan = _validate_revenue_yuan(revenue * UNIT_TO_YUAN.get(unit, 1.0))
-                    records.append(
-                        OverseasRevenueRecord(
-                            stock_code="",
-                            report_period="",
-                            region_name=region,
-                            revenue=revenue,
-                            revenue_unit=unit,
-                            revenue_yuan=revenue_yuan,
-                            source_page=page_num,
-                            raw_text=line[:120],
-                        )
-                    )
+            line_clean = line.replace("\n", "").replace("\r", "")
+            region = _match_overseas_region(line_clean)
+            if not region:
+                continue
+            if "分行业" in line_clean or "分产品" in line_clean or "分客户" in line_clean:
+                continue
+            is_total_row = any(kw in line_clean for kw in TOTAL_ROW_KEYWORDS)
+            revenue, unit = _parse_revenue_from_row(line_clean, page_unit)
+            if revenue is not None:
+                records.append(_make_record(
+                    region, revenue, unit, line_clean, page_num,
+                    page_confidence, is_total_row,
+                ))
 
     return records
 
@@ -284,6 +334,15 @@ def _parse_revenue_from_row(row_text_or_list, page_unit: str = "元") -> tuple[O
         r"(?<!\d)(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d+|\d{4,})(?!\d|%|\.\d)",
         text,
     )
+    # 最小金额阈值随单位调整：亿元单位下 0.01 亿（1 百万元）也算合法
+    min_value_by_unit = {
+        "元": 100.0,
+        "千元": 1.0,        # 1 千元 = 1000 元
+        "万元": 1.0,        # 1 万元 = 10000 元
+        "百万": 1.0,        # 1 百万 = 100 万元
+        "亿元": 0.01,       # 0.01 亿元 = 100 万元
+    }
+    min_value = min_value_by_unit.get(unit, 100.0)
     for c in candidates:
         if re.fullmatch(r"(19|20)\d{2}", c):
             continue
@@ -292,7 +351,7 @@ def _parse_revenue_from_row(row_text_or_list, page_unit: str = "元") -> tuple[O
         except ValueError:
             continue
         # 过滤掉极小数（行号、百分比残留）
-        if v < 100:
+        if v < min_value:
             continue
         return v, unit
 
@@ -326,3 +385,56 @@ def summarize_results(results: list[ParseResult]) -> dict:
             {"stock_code": r.stock_code, "error": r.error} for r in results if not r.success
         ],
     }
+
+
+# 置信度排序：high > medium > low
+_CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1}
+
+
+def select_best_record(
+    records: list[OverseasRevenueRecord],
+) -> tuple[Optional[OverseasRevenueRecord], list[str]]:
+    """P1-3：从候选记录里选最佳记录。
+
+    选择规则：
+    1. 优先 confidence=high 的非 total_row 记录
+    2. 若全为 total_row，回退取最大金额（标 warning）
+    3. 同 confidence 取金额最大
+
+    Returns:
+        (best_record, warnings)
+        best_record 可能为 None（候选为空时）
+        warnings 是选择过程中产生的疑点（多年交叉校验和 ratio 校验由 import 层做）
+    """
+    if not records:
+        return None, []
+
+    warnings: list[str] = []
+    non_total = [r for r in records if not r.is_total_row]
+    pool = non_total if non_total else records
+    if not non_total:
+        warnings.append("all_candidates_are_total_row")
+
+    # 排序：confidence 高优先 → 金额大优先
+    pool_sorted = sorted(
+        pool,
+        key=lambda r: (_CONFIDENCE_RANK.get(r.confidence, 0), r.revenue_yuan or 0),
+        reverse=True,
+    )
+    best = pool_sorted[0]
+
+    # 高置信度候选多条且金额差距大 → warning
+    high_conf = [r for r in pool if r.confidence == "high"]
+    if len(high_conf) > 1:
+        amounts = sorted([r.revenue_yuan or 0 for r in high_conf], reverse=True)
+        if amounts[0] > 0 and amounts[-1] / amounts[0] < 0.5:
+            warnings.append(
+                f"multiple_high_confidence_candidates:"
+                f"max={amounts[0]/1e8:.2f}yi min={amounts[-1]/1e8:.2f}yi"
+            )
+
+    # 最佳记录置信度低 → warning
+    if best.confidence == "low":
+        warnings.append(f"low_confidence_only:best={best.confidence}")
+
+    return best, warnings

@@ -63,6 +63,18 @@ REPORT_SKIP_TOKENS: tuple[str, ...] = (
 )
 
 
+def build_pdf_filename(code: str, year: int, report_type: str) -> str:
+    """生成定期报告 PDF 的 canonical 文件名。
+
+    - 年报：{code}_{year}_annual_report.pdf（与历史存量命名一致）
+    - 半年报/季报：{code}_{year}_{report_type}.pdf
+    """
+    code = str(code).zfill(6)
+    if report_type == "annual":
+        return f"{code}_{year}_annual_report.pdf"
+    return f"{code}_{year}_{report_type}.pdf"
+
+
 class CnInfoDownloader:
     def __init__(self, cache_dir: Path | None = None):
         self.cache_dir = cache_dir or (config.CACHE_DIR / "cninfo")
@@ -186,14 +198,26 @@ class CnInfoDownloader:
         save_dir: Path | None = None,
         skip_if_exists: bool = True,
     ) -> Path:
-        """下载定期报告 PDF（annual/half_year/q1/q3）。返回本地 PDF 路径。"""
+        """下载定期报告 PDF（annual/half_year/q1/q3）。返回本地 PDF 路径。
+
+        文件名约定：
+        - 年报：{code}_{year}_annual_report.pdf（canonical，与历史存量文件一致）
+        - 半年报/季报：{code}_{year}_{report_type}.pdf
+        - skip_if_exists 时同时检查 legacy 年报命名 _annual.pdf，避免重复下载
+        """
         save_dir = save_dir or config.ANNUAL_REPORT_PDF_DIR
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        filename = f"{code}_{year}_{report_type}.pdf"
-        save_path = save_dir / filename
+        canonical = build_pdf_filename(code, year, report_type)
+        save_path = save_dir / canonical
         if skip_if_exists and save_path.exists() and save_path.stat().st_size > 100_000:
             return save_path
+
+        # 兼容 legacy 年报命名 _annual.pdf
+        if skip_if_exists and report_type == "annual":
+            legacy = save_dir / f"{code}_{year}_annual.pdf"
+            if legacy.exists() and legacy.stat().st_size > 100_000:
+                return legacy
 
         ann = self.query_report(code, year, report_type=report_type)
         if not ann:
