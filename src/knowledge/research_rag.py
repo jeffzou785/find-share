@@ -1,16 +1,19 @@
-"""研报 RAG 知识层（轻量版：jieba + TF-IDF + SQLite，不依赖 chromadb）。
+"""研报 RAG 知识层（轻量版：jieba + TF-IDF + SQLite + 同义词扩展，不依赖 chromadb）。
 
 工作原理：
 1. PDF 解析 → 按页分块
 2. jieba 分词，去掉停用词
 3. 用 TF-IDF 算每个 chunk 的词向量
 4. SQLite 存 chunks 文本 + metadata，pickle 存 TF-IDF 矩阵
-5. 查询时：jieba 分词 query → 算 query 的 TF-IDF → 余弦相似度排序
+5. 查询时：
+   - P1.5-5：同义词扩展（如"海外"扩展为"海外/境外/国外/出口"）
+   - metadata 强过滤（stock_code / broker）
+   - 算 query 的 TF-IDF → 余弦相似度排序
 
 权衡：
 - 优点：零额外模型下载，秒级启动，完全本地
-- 局限：TF-IDF 不如同义词理解（如"海外"vs"境外"视为不同词）
-- 改进方向：未来可加同义词词典 / 升级 sentence-transformers embedding
+- 局限：TF-IDF + 同义词比 embedding 简单，但已能解决"海外 vs 境外"这类常见召回问题
+- 升级路径：研报量 >100 后再评估 sentence-transformers（参见 IMPROVEMENTS §5.5）
 """
 from __future__ import annotations
 
@@ -48,6 +51,56 @@ _STOPWORDS = set(
     分析师 研究员 研报 券商
   """.split()
 )
+
+# P1.5-5：同义词词典（双向扩展）。
+# 查询含任一词时，扩展到该组所有词。
+SYNONYM_GROUPS: list[set[str]] = [
+    # 海外/出口主题
+    {"海外", "境外", "国外", "出口", "国际", "外销"},
+    # 订单/合同
+    {"订单", "中标", "签约", "合同", "项目"},
+    # 一带一路
+    {"一带一路", "丝路", "BR"},
+    # 区域：欧洲
+    {"欧洲", "欧盟", "EU", "欧洲区"},
+    # 区域：美洲
+    {"美洲", "北美", "南美", "美加"},
+    # 区域：亚洲（除国内）
+    {"东南亚", "东盟", "ASEAN"},
+    {"日韩", "日本", "韩国"},
+    # 渠道/销售
+    {"渠道", "经销", "代理"},
+    # 产能/扩产
+    {"产能", "扩产", "投产", "新建"},
+    # 业绩/超预期
+    {"业绩", "增长", "超预期", "亮眼"},
+]
+
+# 反向索引：词 → 同义词组（用于查询扩展）
+_SYNONYM_INDEX: dict[str, set[str]] = {}
+for _grp in SYNONYM_GROUPS:
+    for _w in _grp:
+        _SYNONYM_INDEX.setdefault(_w, set()).update(_grp)
+
+
+def expand_query_synonyms(tokens: list[str]) -> list[str]:
+    """P1.5-5：用同义词词典扩展 query tokens。
+
+    输入 ["海外", "订单"] → 输出 ["海外", "境外", "国外", "出口", "国际", "外销",
+                              "订单", "中标", "签约", "合同", "项目"]
+    保留原始 token 顺序，扩展的同义词追加在后（降低其在 tf 中的权重）。
+    """
+    expanded = list(tokens)
+    seen = set(tokens)
+    for t in tokens:
+        syns = _SYNONYM_INDEX.get(t)
+        if not syns:
+            continue
+        for s in syns:
+            if s not in seen:
+                expanded.append(s)
+                seen.add(s)
+    return expanded
 
 
 @dataclass
@@ -359,6 +412,8 @@ class ResearchRAG:
 
     def _compute_query_vector(self, query: str) -> np.ndarray:
         tokens = _tokenize(query)
+        # P1.5-5：同义词扩展（"海外" → "海外/境外/国外/出口/国际/外销"）
+        tokens = expand_query_synonyms(tokens)
         if not tokens or self._vocab is None:
             return np.zeros(0, dtype=np.float32)
         tf = Counter(tokens)

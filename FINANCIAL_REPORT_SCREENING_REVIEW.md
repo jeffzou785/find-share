@@ -1,241 +1,220 @@
-# find-share 财报披露改进文档 Review（v4）
+# find-share 改进文档 Review（v5）
 
-针对 `FINANCIAL_REPORT_SCREENING_IMPROVEMENTS.md` 的复核意见。
+针对 `FINANCIAL_REPORT_SCREENING_IMPROVEMENTS.md` v3（README 同步版，2026-06-27）的复核意见。
 
 ## 文档状态
 
-- v3 review 基于改进文档「最终版」（2026-06-26）。
-- v3 相比 v2 的变化：
-  - v2-2.1「评分层硬性风控短路」已被最终版 P2-1 采纳，移入「已采纳」。
-  - 新增 4 条 v3 意见：watch 语义、`config_json` 结构、CSV/Markdown 输出、`disclosures` 扩列语义。
-  - v2 待补充章节 5 条意见最终版仍未响应，保留并标注。
-- v4 相比 v3 的变化：
-  - 改进文档「最终版 v2」新增了「执行计划」章节（步骤 0-7）。
-  - v4 新增「四、执行计划复核」小节，复核执行计划合理性，提出 5 个会踩坑的具体问题。
-- 所有代码引用位置已于 2026-06-26 重新核查。
+- v3 把 P0/P1 已完成项和 P1.5/P2 待做项清晰分离，跟 README 对齐做得好。
+- v3 比旧版（v2，1069 行）精简到 373 行，去掉了与 README 重复的执行计划细节。
+- v5 相比 v4 的变化：
+  - v4 主要复核旧 v2 的执行计划，已经不再适用（v2 的执行计划全部完成）。
+  - v5 重新基于 v3 + 今天的状态化改造修复（commit `d6ac629`）做复核。
+- 所有代码引用位置已于 2026-06-27 重新核查。
 
-## 一、已采纳（最终版已吸收）
+---
 
-### 1.1 策略命名前后矛盾 ✓
+## 一、已采纳（v3 已经吸收）
 
-- v1 意见：改进文档同时使用「策略二出海」和「策略三出海」，commit `94d3753` 显示策略二（医药量价齐升）已弃用。
-- 核查：`src/strategies/overseas_champion.py:1` docstring 写「策略三：出海隐形冠军」。
-- 最终版响应：第 15 行明确「后续文档、脚本、表名、报告统一使用策略一 / 策略三」。
+### 1.1 P0/P1 完成状态对齐 ✓
 
-### 1.2 RAG 升级路线违反轻量偏好 ✓
+v3 第 23-32 行明确：
+- P0 财报季闭环已基本跑通（screening 抽象层 + 审计表 + run_after_disclosure + baseline diff + 测试）。
+- P1 基础信号已部分落地（PB/营收/毛利率/研报覆盖度/parser 增强/baseline 工具）。
+- 剩余问题集中在 P1.5 和 P2。
 
-- v1 意见：升级到 `sentence-transformers + bge-small-zh` 会拉进 PyTorch / transformers / huggingface_hub + 模型权重，违反 memory `feedback_avoid_chromadb.md` 的轻量偏好。
-- 最终版响应：P2-3 第 351-363 行保持轻量升级顺序（metadata → 同义词 → 关键词模板 → 外部 embedding API），明确「不建议把 PyTorch、本地 transformers、chromadb 作为主线依赖」。
+跟当前代码状态完全对齐。
 
-### 1.3 数据源替换方案隐藏巨大成本 ✓
+### 1.2 状态语义沿用 P0 ✓
 
-- v1 意见：腾讯财经无 PE/PB 历史，本地累积到能算 3 年分位至少要 3 年；AkShare 不应被替换，应分两条路。
-- 最终版响应：P1-4 第 300-311 行数据源分层表明确「AkShare 暂时不可替代」「腾讯财经只补当日快照」。
+v3 §4.1 保留 `hit / watch / rejected / data_missing / error` 五状态语义，并明确：
+- `parse_warning` 优先 `watch`，不直接 `rejected`。
+- 软证据（一致预期、研报覆盖、热点）缺失时不剔除。
 
-### 1.4 新增表存在冗余和职责重叠 ✓
+跟 `src/screening/status.py` 实现一致。
 
-- v1 意见：`financial_snapshots` 字段都能从 `financials` + `financials_full` 派生；`report_events` 和已有 `disclosures` 表字段重合。
-- 核查：`src/storage/duckdb_store.py:91` 确实已有 `disclosures` 表。
-- 最终版响应：第 365-393 行明确「不建议新增 `financial_snapshots`」「优先扩展现有 `disclosures`，不急着新增 `report_events`」。
+### 1.3 数据源分层 + 暂不新增表 ✓
 
-### 1.5 PDF 文件名 bug 结论偏了 ✓
+v3 §4.2 / §4.3 保留：
+- AkShare / 新浪 / 巨潮 / 东财 / 同花顺 分层主源 + 辅助源。
+- 短期不新增 `financial_snapshots` / `report_events`。
 
-- v1 意见：`cninfo_downloader.py:193` 写 `{code}_{year}_{report_type}.pdf` 会产出 `_annual.pdf`，但存量文件全是 `_annual_report.pdf`；正确做法是改下载器回到 `_annual_report.pdf`（方案 A），不是让 import 脚本去兼容。
-- 核查：
-  - `src/collectors/cninfo_downloader.py:193` 确实写 `f"{code}_{year}_{report_type}.pdf"`，默认 `report_type="annual"` → `_annual.pdf`。
-  - `data/pdfs/annual_reports/` 目录下 20+ 份历史文件全部是 `_annual_report.pdf`。
-- 最终版响应：P0-1 第 37-71 行明确「年报 canonical 文件名统一为 `{code}_{year}_annual_report.pdf`」，定性为 P0。
+跟今天代码（11 张 DuckDB 表，含 `screen_runs` / `candidate_scores`）一致。
 
-### 1.6 评分层硬性风控短路 ✓（v3 新确认采纳）
+### 1.4 stale run 清理修复 ✓
 
-- v2 意见：评分层应明确「硬过滤命中（ST / 造假疑点 / 海外收入 parse_warning）应绕过 final_score 直接剔除，而非仅作为 risk_penalty 扣分」。
-- 最终版响应：P2-1 第 335 行明确「不用评分覆盖硬风控，例如 ST、明显财务异常、海外收入解析异常」。
-- 仍待补充的关联点见 3.6（watch 状态语义）。
+v3 §3.2 第 62 行明确："`cleanup_stale_screen_runs` 已实现并修复 DuckDB interval 写法"。
 
-## 二、部分采纳（被推迟或部分响应）
+对应 `src/storage/duckdb_store.py:598`：今天把 `pd.Timedelta(hours=...)` 当 SQL 参数改成 `INTERVAL '{n}' HOUR` 字面量 + int 校验。
 
-### 2.1 事件驱动入口的并发模型仍未定义
+---
 
-- v1 意见：`run_after_disclosure.py` 粗估 100 家披露需要数小时，改进文档没提并发模型、超时、断点续跑。
-- 最终版响应：P0-4 第 205-212 行明确「单股失败不中断全局运行」「可重复运行，不重复下载大文件」。
-- **未解决点**（v2 已提出，最终版仍未响应）：
-  - **并发模型**：`_em_throttle.py` 是串行限流。100 家 ×（东财研报 + 同花顺一致预期 + 新浪三表 + PDF 下载）的总耗时估算和并发上限。
-  - **超时与重试**：单只股票某数据源拉失败时，重试几次？超时多久？
-  - **断点续跑**：跑到一半中断后，`screen_runs.status` 如何标记？重跑时如何跳过已成功项？
-- 建议给一个粗估：单只 N 分钟 × 100 只 = 总耗时，并发上限 4-8，总超时 4h。
+## 二、🔴 必须立刻修（今天已修，但 v3 还没记录）
 
-## 三、待补充（v2 延续 + v3 新增）
+### 2.1 run_overseas_champion 重复 _evaluate_one（已修）
 
-### 3.1 `metrics_json` schema 未定义（v2 延续，最终版仍未响应）
+**问题**：commit `d09bcd5` 之前，`src/strategies/overseas_champion.py` 有两个 `_evaluate_one` 定义：
+- line 431：新写的状态化 shim（转发到 `_evaluate_one_to_result`）
+- line 556：旧的内联实现（保留原样）
 
-- 最终版 P0-2 第 119 行只有字段名 `metrics_json`，第 135 行只举了「PE 分位、扣非同比、海外收入占比、现金流质量」。半年后复盘时字段会乱。
-- 待补充：至少约定顶层 key 分组：
+Python 后定义覆盖前定义，导致 `run_overseas_champion` 调的是旧实现，**完全不走状态化路径**。后果：
+- `scripts/run_phase3_strategy3.py` 跑的是旧行为，没拿到 P1-2 / P1-3 增强。
+- README 宣称"策略三加现金流/负债率过滤"，但旧 CSV 入口实际没生效。
+- line 431 的 shim 是死代码，而且签名缺 `overseas_meta` 参数，调用会 `TypeError`。
 
-  ```text
-  metrics_json:
-    valuation: { pe_ttm, pe_pct_3y, pb, market_cap }
-    growth:    { revenue_yoy, deducted_profit_yoy_ttm }
-    quality:   { gross_margin, roe, ocf_to_net_profit, debt_ratio }
-    overseas:  { overseas_ratio, overseas_yoy, parse_warning }
-    catalyst:  { reports_count_90d, hot_reason_count_30d }
-  ```
+**修复**：删除 line 556 旧实现，重构 `run_overseas_champion` 调 `evaluate_overseas_full` + 过滤 hit。`_result_to_legacy_dict` 补 `ocf_to_profit` / `debt_ratio` 字段。
 
-- 同时约定：未计算写 `null` 不写 `0`，避免和真实 0 混淆。
+**测试**：`tests/strategies/test_overseas_champion.py` 加 5 个直接调 `run_overseas_champion` 的回归测试（hit / parse_warning / yoy 异常 / PE 过高 / 行业不符）。
 
-### 3.2 `disclosures` 表覆盖率和 fallback（v2 延续，最终版仍未响应）
+**v3 文档建议补充**：§3.2 加一行说明此修复。这是 P0 级 bug，比 stale run interval 修复严重得多。
 
-- 最终版 P0-4 第 186 行 `--from-disclosures` 默认此表覆盖好、更新及时，但没核验现状。
-- 待补充：
-  - 当前覆盖率（多少股票、多少报告期）和更新频率。
-  - 缺失时 fallback：`--codes` 手动指定 / 全市场扫描 / 主动从东财披露日历补。
-  - 流程跑不通时不应静默跳过，要落到 `screen_runs.error`。
+### 2.2 run_phase3_strategy3.py markdown TypeError（已修）
 
-### 3.3 失败语义和 `--resume`（v2 延续，最终版仍未响应）
+**问题**：commit `d6ac629` 重构 `run_overseas_champion` 走状态化路径后，`_result_to_legacy_dict` 把 `revenue_yi` 设成 `None`。但 `scripts/run_phase3_strategy3.py:228` 用：
 
-- 最终版 P0-4 只说「单股失败不中断」「可重复运行」，没区分两类失败：
-  - **数据缺失**（PDF 没下来、研报没覆盖）→ `status=data_missing`，可重跑。
-  - **代码异常**（解析报错、DuckDB 写入失败）→ `status=error`，需人工。
-- 待补充：
-  - 单只失败时把入参（code、period、strategy）+ 异常类型 + 异常 message 落到 `candidate_scores`。
-  - 提供 `--resume` 标志：重跑时跳过 `status in (hit, watch)`，只重试 `data_missing / error`。
+```python
+f"{r['revenue_yi']:.1f}"
+```
 
-### 3.4 表创建位置和迁移策略（v2 延续，最终版仍未响应）
+`None:.1f` 抛 `TypeError: unsupported format character`。任何用户跑 `run_phase3_strategy3.py` 都会崩。测试没抓到是因为只验 DataFrame 长度和列名，没跑 markdown 输出。
 
-- 最终版 P0-2 新增两张表，但没说：
-  - `CREATE TABLE IF NOT EXISTS` 放哪？建议在 `src/storage/duckdb_store.py` 现有 schema 初始化函数里加，不要另写脚本。
-  - 旧数据是否回填？建议**不回填**，从首次启用日开始。
-  - 保留多久？建议 `screen_runs` 永久保留（小表），`candidate_scores` 按 period 滚动保留 2 年。
-  - `candidate_scores` 复合索引：`(strategy, period, status)`，方便复盘查询。
+**修复**：
+1. `OverseasMetrics` 加 `total_revenue_yi` 字段（`src/screening/schemas.py`）。
+2. `_evaluate_one_to_result` 写入 `metrics.overseas.total_revenue_yi = float(revenue) / 1e8`。
+3. `_result_to_legacy_dict` 从 metrics 拿，填 `revenue_yi`。
+4. `run_phase3_strategy3.py` markdown 加 `_fmt()` helper，对所有数值字段做 `pd.notna` + try/except 防御。
 
-### 3.5 数据源切换需要 baseline 回归测试（v2 延续，最终版仍未响应）
+**测试**：`test_overseas_champion.py::test_hit_returns_one_row` 加断言 `revenue_yi ≈ 100.0` 和 `overseas_revenue_yi ≈ 30.0`。
 
-- 最终版 P1-4 数据源分层表涉及多处切换：新浪三表 vs AkShare 财务、腾讯快照 vs AkShare PE、巨潮 vs mootdx F10。
-- 风险：字段映射（「营业总收入」vs「营业收入」、净利润口径、EPS TTM 算法）容易静默漂移。
-- 待补充：
-  - 切换前先建数值对照 baseline（30-50 只样本股 × 关键指标），记录两源差异分布。
-  - 差异超阈值（如 PE 差 > 5%）的字段进入「不可替换」清单，继续用旧源。
-  - 切换后跑回归测试，防止策略命中清单突变。
+**v3 文档建议补充**：§5 加一项"P1.5-补全 legacy CSV 字段"，因为还有 `ocf_net_yi / net_profit_yi / total_liabilities_yi / total_assets_yi / eps_current / eps_forecast_y1/y2 / eps_y1_growth / eps_y2_growth` 8 个字段在状态化后丢失。当前 CSV 用 `[c for c in cols if c in result.columns]` 兼容不崩，但信息少了一半。
 
-### 3.6 `watch` 状态和「软剔除」语义不清（v3 新增）
+### 2.3 AkShare revenue_yoy / gross_margin 百分数单位（已修）
 
-- 最终版 P0-2 第 125-131 行 `status` 枚举有 `watch`，但 P0-3 第 144-168 行的剔除原因全是 `rejected` 导向，没有「数据存疑但可关注」的中间态。
-- 现实问题：海外收入 `parse_warning`、一致预期缺失这种「数据有疑点但不至于剔除」的情况，应走 watch，不应直接 rejected。
-- 待补充：
-  - 明确映射规则：硬风控短路（ST / 造假疑点 / 解析失败）→ `rejected`；可选数据缺失或阈值边界 → `watch`。
-  - `parse_warning` 不应触发 rejected，应触发 watch 并在 `metrics_json.overseas.parse_warning` 留痕。
-  - 策略三 `overseas_champion.py:8` 一致预期是「可选过滤」，缺失时应明确走 watch 而非 rejected。
+**问题**：commit `d6ac629` 之前，`src/strategies/consumer_reversal.py` 用启发式：
 
-### 3.7 `screen_runs.config_json` 结构未定义（v3 新增）
+```python
+if abs(revenue_yoy_f) > 1:
+    revenue_yoy_f = revenue_yoy_f / 100.0
+```
 
-- 最终版 P0-2 第 100 行有 `config_json` 字段，但没说存什么。
-- 待补充：建议至少存：
-  - 策略阈值（PE 上限、扣非同比下限、海外收入占比下限、现金流质量下限、负债率上限）。
-  - 数据源版本（AkShare / 新浪 / 腾讯 / 东财）。
-  - 框架版本号（用于复盘时知道当时逻辑）。
-  - P2 评分层落地后，再追加评分权重。
+但 AkShare `stock_financial_abstract` 的"营业总收入增长率"实际**总是百分数**（如茅台 2024 年 `revenue_yoy=15.66` 表示 15.66%）。启发式在两个场景出错：
+- 营收同比 0.5%（百分数 0.5）→ `abs(0.5) > 1` 为 False → 不除 → 当成 50% → **误判高增**。
+- 营收同比 -0.5%（百分数 -0.5）→ 当小数 -50% → **误判下滑**。
 
-### 3.8 CSV / Markdown 输出路径和结构未定义（v3 新增）
+同样，`gross_margin` 是百分数（91.96 = 91.96%），相减得 pp（百分点），但阈值 `gross_margin_yoy_min=-0.005` 是小数（-0.5pp）→ 单位不匹配，下降 0.03pp 会触发拒绝（应在允许范围内）。
 
-- 最终版 P0-4 第 202 行只说「导出 CSV / Markdown」，没说路径、文件名、内容结构。
-- 待补充：
-  - 路径建议：`data/exports/runs/{run_id}/{strategy}_{period}.csv`。
-  - Markdown 报告结构：run_id、汇总计数（hit/watch/rejected/data_missing/error）、命中清单、剔除原因分布、data_missing 清单。
-  - 复盘入口：建议加一个 `scripts/review_run.py` 按 run_id 拉起 Markdown 报告。
+测试用小数构造数据所以过，但生产用 AkShare 真实数据会错。
 
-### 3.9 `disclosures` 扩列的 ALTER TABLE 语义未说（v3 新增）
+**修复**：改成确定的 `/100` 转换；`gross_margin` 也 `/100`，与 `gross_margin_yoy_min=-0.005` 单位对齐。测试 fixture 改百分数（与生产一致）。
 
-- 最终版第 383-391 行给 `disclosures` 增加 `report_type` / `pdf_path` / `ingested_at` / `status` / `error` 列，但没说是 ALTER 还是重建。
-- DuckDB 支持 `ALTER TABLE ADD COLUMN`，但需注意：
-  - 已有行的新增列默认 `NULL`，需要决定是否回填。
-  - 如果用 `CREATE TABLE IF NOT EXISTS` 不会扩列，老库会缺字段。
-- 待补充：
-  - 明确使用 `ALTER TABLE disclosures ADD COLUMN IF NOT EXISTS ...`（DuckDB 1.3+ 支持）。
-  - 老库迁移函数：检查列存在性，缺失则补。
-  - 历史行的 `report_type` 可以从 `period` 推导（如 `2024A` → `annual`），其他字段留 NULL。
+**v3 文档建议补充**：§3.3 P1-1 行加一句"已修 AkShare 百分数单位转换"。否则"P1-1 已加 PB/营收/毛利率验证"是空中楼阁——单位错的话验证全错。
 
-## 四、执行计划复核（v4 新增）
+---
 
-针对改进文档「最终版 v2」新增的「执行计划」（步骤 0-7）的复核。
+## 三、🟡 v3 文档可以补充的地方
 
-整体结构合理——每步独立验收、P0→P1→P2 顺序正确、"暂不做"清单清晰、与 P0-1~P2-3 对应关系明确。**但有 5 个会踩坑的具体问题**：
+### 3.1 P1.5 优先级建议调整：本地落库应排最前
 
-### 4.1 缺 baseline 快照，「不大幅漂移」无法判断
+v3 §5 列了 P1.5-1 到 P1.5-5，顺序是：
+1. P1.5-1 被忽视证据链
+2. P1.5-2 海外收入解析困难样本
+3. P1.5-3 财务估值本地落库
+4. P1.5-4 行业覆盖和参数化
+5. P1.5-5 RAG 升级
 
-- 步骤 2 验收要求「现有 `target_pool.csv` 和 `target_pool_overseas.csv` 的命中结果不出现无解释的大幅漂移」，但**步骤 0/1 都没存 baseline**。
-- 没有基准快照，"漂移"只能凭感觉判断。
-- 建议：步骤 0 末尾或步骤 1 末尾加一条——把当前 `target_pool*.csv` 复制到 `data/baselines/pre_stateful_{date}/`，步骤 2 验收时 diff 这个目录。
+**建议把 P1.5-3 提到 P1.5-1 之前**，理由：
 
-### 4.2 步骤 3 默认 `max_workers=4` 风险高
+- 当前每次跑策略都实时拉 AkShare。30 只股票 ×（PE 历史 + 财务摘要 + 可能多次重试）= 几分钟到十几分钟。
+- 财报季 AkShare 数据会变（同一报告期财报季中后期会被修订），跑两次结果可能不同 → **破坏可复盘性**（这是 P0 状态化改造的核心目标）。
+- 其他 P1.5 项都依赖稳定的本地数据才有意义——例如被忽视证据跑两次结果不一致就无法横向比较。
 
-- 改进文档 P0-9 第 389 行和步骤 3 第 849 行都写 `max_workers=4`，但**东财接口必须串行**（`src/collectors/_em_throttle.py` 强制 `EM_MIN_INTERVAL=1.0s`）。
-- 4 个线程并发打东财会触发风控，30 只样本跑一半就废。
-- 建议：
-  - 默认 `max_workers=1`（全串行），把 `ThreadPoolExecutor` 框架留出来。
-  - 只在 PDF 下载、新浪请求这两个非东财环节启用并发，上限 2-3。
-  - 步骤 4 跑通后再调优，不要在步骤 3 默认就开 4。
+**建议动作**：在 §5 开头加一句明确"P1.5-3 影响最大，应最先做；其他 P1.5 项依赖本地数据稳定"。
 
-### 4.3 步骤 2 工作量被低估（策略代码状态化是大改）
+### 3.2 §5.1 依赖关系没说清
 
-- 步骤 2 把「策略一/三从只给命中改成全量状态化」作为单个步骤，但这是**最大的代码改造**：
-  - 当前 `src/strategies/consumer_reversal.py` / `overseas_champion.py` 大概率是直接 `to_csv()` 输出命中清单的形态。
-  - 要改成每只候选股都有 `status / hit_reason / reject_reason / metrics_json`，整个数据流要重构。
-  - 还要新增 watch 状态映射（`parse_warning / consensus_missing / near_threshold`），这些在现有代码里完全不存在。
-- 建议步骤 2 拆为：
-  - **2a**：定义 `ScreeningResult` dataclass + `src/screening/status.py` 枚举常量 + 原因码映射。
-  - **2b**：策略一改造 + 测试。
-  - **2c**：策略三改造 + 测试。
-  - **2d**：跑 baseline diff，确认命中清单无突变。
+v3 §5.1 列了 4 个 collector（概念板块 / 热点 / 新闻 / 相对收益）+ `neglect_evidence`。但 `neglect_evidence` 是**聚合字段**，需要前 4 个数据齐才能算。
 
-### 4.4 错误恢复没说（`screen_runs` 脏数据）
+**建议**：在 §5.1 加一段：
 
-- 步骤 3 流程写 `创建 screen_runs(status=running)` → 跑 → `更新 screen_runs(status=success/partial/failed)`。
-- **但如果跑到一半进程被 Ctrl-C 或 OOM 杀掉**，会留下 `status=running` 的脏数据，后续查询会困惑。
-- 建议补充：
-  - 启动时扫 `WHERE status='running' AND started_at < now()-1h`，更新为 `status=failed, error='process_killed'`。
-  - 或者用 PID + 心跳机制（每 30s 更新 `last_heartbeat`），启动时清理超时心跳。
+> 前 4 个 collector 可以分批 ship（各自独立填 metrics），`neglect_evidence` 是最后一步聚合，依赖前 4 个完成。建议先做"研报覆盖度 + 新闻数"两项最容易拿的，热点/概念/相对收益作为第二批。
 
-### 4.5 步骤 5 过大，步骤 7 把无关任务绑一起
+### 3.3 §8 README 数字校准
 
-- 步骤 5 把 P1-1 ~ P1-5 全塞一起，**工作量是步骤 0-4 之和的 2-3 倍**。建议拆：
-  - **5a**：P1-4 + P1-5 数据源分层 + baseline（必须先做，否则后续无法判断字段漂移）。
-  - **5b**：P1-3 海外收入解析增强（独立，可单独验收）。
-  - **5c**：P1-1 + P1-2 策略一/三新信号（依赖 5a 的数据源稳定）。
-- 步骤 7 把 P2-2（季报）和 P2-3（RAG）放一起，**两者无强依赖**。建议拆 7a/7b，谁先做完谁先合。
+v3 §8 自己提了"应该更新 DuckDB 表数和脚本数"，但没给准确数字：
 
-### 4.6 小问题（不阻塞但建议改）
+- DuckDB 表数：实际 13 张（含 `screen_runs` / `candidate_scores`），v3 §8 说"应更新为包含 screen_runs / candidate_scores 后的表数"但没说具体值。
+- 脚本数：实际 11 个 `.py`（`run_after_disclosure.py` / `baseline_diff.py` / `data_source_baseline.py` 是新增），v3 §8 说"已有新增脚本"但没说具体值。
 
-- **缺时间估算**：8 个步骤没给预期工作量，无法排期。建议每步标注「≈N 天」。
-- **步骤 0 措辞不准**：写「补策略三海外收入异常过滤测试」，但 `overseas_ratio_abnormal` 这个原因码是步骤 2 才定义的，步骤 0 只能测现有硬过滤，应改措辞为「补策略三现有海外收入硬过滤测试」。
-- **步骤 4 没说人工抽查工作量**：30 只 × 5 类样本的人工 review 约需 0.5-1 天，应在交付物里注明。
+**建议**：v3 §8 直接给出准确数字，避免下游 README 同步时还要再数一遍。
 
-### 4.7 建议补充的 2 件事
+### 3.4 §5.2 select_best_record ratio 校验的位置
 
-1. **加「环境前置」小节**（步骤 0 之前）：明确 DuckDB 文件路径、`tests/` 用 pytest、Python 版本、依赖锁文件（`requirements.txt` 或 `uv.lock`），避免开工后发现环境问题。
-2. **加「rollback 策略」小节**：每个步骤如果跑挂了怎么回滚——比如步骤 1 改了 schema 后跑步骤 2 出问题，能否 disable 新表回到老流程。
+v3 §5.2 建议动作第 3 条："`select_best_record` 增加总营收 ratio 校验，优先选择合理海外收入占比的候选。"
 
-### 4.8 执行计划部分总体观感
+但 `select_best_record` 在 `src/collectors/annual_report_parser.py` 里，**parser 阶段拿不到总营收**（总营收来自 AkShare/新浪，不是 PDF）。所以 ratio 校验只能在策略层做：
 
-执行计划方向正确，**主要问题是步骤 2 和步骤 5 工作量估算偏小**，加上 `max_workers=4` 这个并发默认值会直接踩东财限流的坑。其他都是细节。如果按 4.1-4.5 修订，整个 P0 闭环（步骤 0-4）约需 2-3 周，P1（步骤 5）拆分后约需 3-4 周。
+- `src/strategies/overseas_champion.py:_evaluate_one_to_result` 已经有 `revenue`（总营收）和 `overseas_revenue`。
+- 当前只有 `overseas_ratio_max=0.95` 单阈值过滤。
+- 可以改成：从 `candidates_json` 里把所有候选都过一遍 ratio 校验，选 ratio 最合理的，而不是直接信 parser 选的最大值。
 
-## 落地优先级建议
+**建议**：v3 §5.2 把"ratio 校验在策略层做"明确写出来，否则按字面意思在 parser 加 ratio 校验会卡住。
 
-最终版 P0/P1/P2 划分基本合理。补充建议：
+---
 
-- **P0 增补**（否则两周内跑不通）：
-  - `metrics_json` schema 规范（3.1）—— 表建好就要定。
-  - `disclosures` 覆盖率核验和 fallback（3.2）—— `--from-disclosures` 的前提。
-  - 失败语义和 `--resume`（3.3）—— 流程跑通就要面对失败。
-  - 表创建位置和迁移（3.4）—— 一次性写对，避免后续 ALTER。
-  - `watch` 状态语义（3.6）—— 和 P0-3 剔除原因一并定义。
-- **P1 增补**：
-  - 数据源切换 baseline 回归测试（3.5）—— P1-4 数据源分层的前置条件。
-- **P2 增补**：
-  - `config_json` 完整结构（3.7）—— P2-1 评分层落地时一并定。
-- **不阻塞但建议早定**：
-  - CSV / Markdown 输出结构（3.8）—— 影响复盘体验。
-  - `disclosures` 扩列 ALTER 语义（3.9）—— 一次性写对。
-  - 并发模型 / 超时 / 断点续跑（2.1）—— 100 家以上跑前必须定。
+## 四、🟢 小问题（不阻塞但建议改）
 
-## 总体观感
+### 4.1 v3 §3.3 P1-1 描述遗漏单位修复
 
-最终版方向正确，优先级清晰，对 v1/v2 review 的吸收也基本完整。v3 主要补的是 **P0 落地的执行细节**：schema、失败语义、覆盖率、迁移、状态语义。这些不影响方向，但会直接影响 P0 能不能在两周内真正跑通——`metrics_json` 半年后乱七八糟、`disclosures` 只有 30 家、跑 100 只用了 6 小时、`watch` 和 `rejected` 混淆导致复盘看不懂，都是这些细节没定会踩的坑。
+如 §2.3 所述，v3 §3.3 行"P1-1 已加入 PB 5 年分位、营收同比、毛利率同比改善；数据缺失降级 watch"漏了"已修百分数单位转换"。建议补一句。
+
+### 4.2 v3 缺一个 P1.5 整体完成定义
+
+§5.1-5.5 每个有自己的验收标准，但 P1.5 整体完成后应该是什么样？建议在 §5 末尾加一节"P1.5 完成定义"，例如：
+
+> 跑一次 30 只样本 `run_after_disclosure.py --period 2025A --from-disclosures --limit 30 --strategy all`：
+> - 总耗时 < 5 分钟（依赖 P1.5-3 本地落库）
+> - markdown 报告能解释每只股票的 hit/watch/rejected/data_missing 原因
+> - 策略三 watch 清单的 `neglect_evidence` 字段非空（依赖 P1.5-1）
+> - 12 份 parser 失败 PDF 至少修复一半（依赖 P1.5-2）
+> - 关键数据从本地 DuckDB 读取，AkShare 仅作 fallback
+
+### 4.3 v3 §7.2 兼容入口的描述可以更明确
+
+v3 §7.2 说"旧脚本继续保留"，但没说"`run_phase3_strategy3.py` 已经通过 `run_overseas_champion` 内部走状态化路径，行为和 `run_after_disclosure.py --strategy overseas` 一致"。建议补一句，避免读者以为两个入口行为不同。
+
+### 4.4 v3 §6.3 统一 CLI 的优先级可以提前
+
+v3 §6.3 列了 P2-3 统一 CLI，但当前已有 11 个脚本，新用户很难知道该用哪个。如果 P1.5 完成后立刻做 CLI 统一，对复盘体验提升很大。建议把 P2-3 提到 P1.5 之后立刻做（不一定要等评分层 P2-1）。
+
+---
+
+## 五、复核总结
+
+### 5.1 已修但 v3 没记录的（必须补）
+
+| # | 问题 | 严重度 | 修复 commit |
+|---|------|-------|-----------|
+| 2.1 | overseas 重复 `_evaluate_one` 导致旧 CSV 入口不走状态化 | P0 | d6ac629 |
+| 2.2 | run_phase3_strategy3.py markdown TypeError（d6ac629 引入的回归） | P0 | 待 commit |
+| 2.3 | AkShare revenue_yoy/gross_margin 百分数单位 | P1 | d6ac629 |
+
+### 5.2 v3 文档可以补充的（建议改）
+
+| # | 建议 | 优先级 |
+|---|------|-------|
+| 3.1 | P1.5-3 本地落库排到 P1.5-1 之前 | 高 |
+| 3.2 | §5.1 写明 `neglect_evidence` 是聚合字段，依赖前 4 个 collector | 中 |
+| 3.3 | §8 README 数字给出准确值（13 表 / 11 脚本） | 中 |
+| 3.4 | §5.2 ratio 校验明确在策略层做，不在 parser | 中 |
+| 4.1 | §3.3 P1-1 补"已修百分数单位转换" | 高 |
+| 4.2 | §5 末尾加 P1.5 整体完成定义 | 中 |
+| 4.3 | §7.2 补"两入口行为一致"说明 | 低 |
+| 4.4 | §6.3 统一 CLI 提到 P1.5 之后立刻做 | 低 |
+
+### 5.3 总体观感
+
+v3 方向正确，README 同步做得到位，比旧 v2（1069 行含执行计划）清爽得多。v5 主要补的是：
+- **今天的修复细节没进 v3**（dup `_evaluate_one` + 单位 + markdown 回归）。
+- **P1.5 优先级建议调整**（本地落库应最先做，否则可复盘性是空中楼阁）。
+- **几处依赖关系和位置说明**（`neglect_evidence` 聚合 / ratio 校验在策略层 / 数字校准）。
+
+不阻塞 v3 落地，但建议下次更新 v3 时一并吸收。

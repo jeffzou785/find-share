@@ -21,7 +21,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import pandas as pd
 
-from src.collectors import AkShareSource
+from src.collectors import AkShareSource, LocalCachedSource
 from src.storage import DuckDBStore
 from src.strategies import apply_quality_filter
 from src.strategies.consumer_reversal import (
@@ -35,8 +35,9 @@ def main() -> int:
     print("Phase 2: 策略一（消费股反转）筛选")
     print("=" * 70)
 
-    source = AkShareSource()
     store = DuckDBStore()
+    # P1.5-1：透明走 LocalCachedSource，先读本地，缺失才 fallback AkShare
+    source = LocalCachedSource(store=store, upstream=AkShareSource())
 
     try:
         # 1. 加载候选池

@@ -27,12 +27,16 @@ from ..indicators.valuation import compute_pe_pb_percentile
 from ..screening import MetricsSchema, ScreeningResult, Status
 
 
-# 策略一目标行业（同时兼容申万 + EM2016 行业名）
+# 策略一目标行业（同时兼容申万 + EM2016 + 新浪 行业名）
+# P1.5-4：扩展消费行业映射，覆盖美妆/个护/医美/鞋服/餐饮/旅游/教育等
 TARGET_INDUSTRIES = [
     "食品饮料",
     "家用电器", "家电",  # 申万 vs EM2016
-    "美容护理",
-    "商贸零售", "商业百货",  # 兼容多种命名
+    "美容护理", "化妆品", "个护用品", "医美", "医疗美容",  # P1.5-4 美容护理细分
+    "商贸零售", "商业百货", "零售", "百货",  # 兼容多种命名
+    "纺织服饰", "服装家纺", "服装", "鞋帽",  # P1.5-4 纺服
+    "社会服务", "餐饮", "酒店餐饮", "旅游", "旅游零售",  # P1.5-4 服务消费
+    "轻工制造", "文教用品", "家居", "家居用品",  # P1.5-4 轻工消费
 ]
 
 # 默认阈值
@@ -50,6 +54,9 @@ TREND_PREV_PREV_MAX = 0.0       #           前前期 yoy < 0%
 DEFAULT_PB_PERCENTILE_MAX = 50.0  # PB 5 年分位 < 50%
 DEFAULT_REVENUE_YOY_MIN = 0.10    # 营收同比 ≥ 10%（避免扣非高增但营收停滞）
 DEFAULT_GROSS_MARGIN_IMPROVEMENT = -0.005  # 毛利率同比下降 ≤ 0.5%（容忍小幅下降）
+
+# P1.5-4：PE/PB 分位时间窗口支持 3y / 5y / 10y
+SUPPORTED_HISTORY_WINDOWS = (3, 5, 10)
 
 
 def is_inflection(yoy_series: list[float]) -> bool:
@@ -86,6 +93,7 @@ def is_trend(yoy_series: list[float]) -> bool:
 class StrategyConfig:
     pe_percentile_max: float = DEFAULT_PE_PERCENTILE_MAX
     deducted_yoy_min: float = DEFAULT_DEDUCTED_YOY_MIN
+    # P1.5-4：history_years 支持参数化（3/5/10），并校验非法值
     history_years: int = 5
     min_history_samples: int = 100  # PE 历史样本至少这么多
     require_reversal_check: bool = True  # 开启反转判定（拐点 OR 趋势）
@@ -97,6 +105,14 @@ class StrategyConfig:
     require_gross_margin_improvement: bool = True
     # 毛利率同比变化下限：-0.005 表示允许下降 0.5pp；正值要求上升
     gross_margin_yoy_min: float = DEFAULT_GROSS_MARGIN_IMPROVEMENT
+
+    def __post_init__(self) -> None:
+        # P1.5-4：history_years 必须在支持窗口内
+        if self.history_years not in SUPPORTED_HISTORY_WINDOWS:
+            raise ValueError(
+                f"history_years 必须是 {SUPPORTED_HISTORY_WINDOWS} 之一，"
+                f"得到 {self.history_years!r}"
+            )
 
 
 def run_consumer_reversal(
@@ -210,16 +226,21 @@ def _evaluate_one_to_result(
                   strategy="consumer", period=period)
 
     try:
-        # 1. PE 历史分位
+        # 1. PE 历史分位（P1.5-4：始终拉 10 年，再按窗口算分位）
         try:
-            pe_hist = source.get_pe_pb_history(code, years=config.history_years)
+            pe_hist = source.get_pe_pb_history(code, years=10)
         except Exception:
             metrics.source_status.valuation = "error"
             return ScreeningResult.data_missing(
                 **common, data_missing_reason="pe_history_missing", metrics=metrics
             )
 
-        pe_stat = compute_pe_pb_percentile(pe_hist, "pe_ttm", config.history_years)
+        # P1.5-4：3y/5y/10y 全部算出来，写入对应字段；当前阈值用 config.history_years
+        pe_stats = {
+            w: compute_pe_pb_percentile(pe_hist, "pe_ttm", w)
+            for w in SUPPORTED_HISTORY_WINDOWS
+        }
+        pe_stat = pe_stats[config.history_years]
         if (
             pe_stat["percentile"] is None
             or pe_stat["sample_count"] < config.min_history_samples
@@ -267,8 +288,12 @@ def _evaluate_one_to_result(
         trend = is_trend(yoy_series)
 
         # 4. P1-1 收集辅助指标（best-effort，缺失不影响硬过滤）
-        # PB 历史分位
-        pb_stat = compute_pe_pb_percentile(pe_hist, "pb", config.history_years)
+        # P1.5-4：PB 历史分位同样多窗口
+        pb_stats = {
+            w: compute_pe_pb_percentile(pe_hist, "pb", w)
+            for w in SUPPORTED_HISTORY_WINDOWS
+        }
+        pb_stat = pb_stats[config.history_years]
         # 营收同比：AkShare stock_financial_abstract 的"营业总收入增长率"是百分数
         # （如 15.66 = 15.66%），统一除以 100 转小数。
         revenue_yoy = latest.get("revenue_yoy")
@@ -301,10 +326,16 @@ def _evaluate_one_to_result(
                     )
 
         # 5. 填充 metrics
+        # P1.5-4：所有窗口的分位都写入；阈值用 config.history_years 选的窗口
         metrics.valuation.pe_ttm = float(pe_stat["current"]) if pd.notna(pe_stat["current"]) else None
-        metrics.valuation.pe_pct_5y = float(pe_stat["percentile"])
+        metrics.valuation.pe_pct_3y = float(pe_stats[3]["percentile"]) if pe_stats[3]["percentile"] is not None else None
+        metrics.valuation.pe_pct_5y = float(pe_stats[5]["percentile"]) if pe_stats[5]["percentile"] is not None else None
+        metrics.valuation.pe_pct_10y = float(pe_stats[10]["percentile"]) if pe_stats[10]["percentile"] is not None else None
+        metrics.valuation.history_window = f"{config.history_years}y"
         metrics.valuation.pb = float(pb_stat["current"]) if pb_stat["current"] is not None else None
-        metrics.valuation.pb_pct_5y = float(pb_stat["percentile"]) if pb_stat["percentile"] is not None else None
+        metrics.valuation.pb_pct_3y = float(pb_stats[3]["percentile"]) if pb_stats[3]["percentile"] is not None else None
+        metrics.valuation.pb_pct_5y = float(pb_stats[5]["percentile"]) if pb_stats[5]["percentile"] is not None else None
+        metrics.valuation.pb_pct_10y = float(pb_stats[10]["percentile"]) if pb_stats[10]["percentile"] is not None else None
         metrics.growth.deducted_profit_yoy_ttm = float(yoy)
         metrics.growth.revenue_yoy = revenue_yoy_f
         metrics.quality.gross_margin = gross_margin_now
@@ -367,20 +398,42 @@ def _metrics_to_csv_row(result: ScreeningResult) -> dict:
     """把 hit 的 ScreeningResult 转回旧 CSV 行格式（保持向后兼容）。
 
     用于 run_consumer_reversal 旧入口输出。
+    P1.5-4：pe_percentile 根据 history_window 选择对应窗口的分位。
     """
     m = result.metrics
+    # P1.5-4：按 history_window 选 pe_percentile，默认 5y
+    window = m.valuation.history_window or "5y"
+    pe_pct_by_window = {
+        "3y": m.valuation.pe_pct_3y,
+        "5y": m.valuation.pe_pct_5y,
+        "10y": m.valuation.pe_pct_10y,
+    }
+    pb_pct_by_window = {
+        "3y": m.valuation.pb_pct_3y,
+        "5y": m.valuation.pb_pct_5y,
+        "10y": m.valuation.pb_pct_10y,
+    }
     return {
         "code": result.code,
         "name": result.name,
         "sw_first": "",  # 旧 CSV 包含 sw_first，状态化后已不强制
         "report_date": None,
         "pe_ttm_current": m.valuation.pe_ttm,
-        "pe_percentile": m.valuation.pe_pct_5y,
+        "pe_percentile": pe_pct_by_window.get(window),
+        "pe_pct_3y": m.valuation.pe_pct_3y,
+        "pe_pct_5y": m.valuation.pe_pct_5y,
+        "pe_pct_10y": m.valuation.pe_pct_10y,
+        "pb": m.valuation.pb,
+        "pb_pct_3y": m.valuation.pb_pct_3y,
+        "pb_pct_5y": m.valuation.pb_pct_5y,
+        "pb_pct_10y": m.valuation.pb_pct_10y,
+        "history_window": window,
         "pe_min": None,
         "pe_median": None,
         "pe_max": None,
         "pe_sample_count": None,
         "deducted_yoy_growth": m.growth.deducted_profit_yoy_ttm,
+        "revenue_yoy": m.growth.revenue_yoy,
         "prev_yoy": None,
         "prev_prev_yoy": None,
         "is_inflection": False,

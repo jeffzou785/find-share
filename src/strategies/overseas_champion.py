@@ -23,6 +23,7 @@
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Optional
 
@@ -30,6 +31,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from ..collectors.base import DataSource
+from ..collectors.neglect_evidence import NeglectEvidenceCollector
 from ..collectors.sina_impl import SinaFinancialSource
 from ..indicators.valuation import compute_pe_pb_percentile
 from ..screening import MetricsSchema, ScreeningResult, Status
@@ -93,6 +95,79 @@ NEGLECT_LOW_REPORT_THRESHOLD = 3
 # 默认统计窗口
 DEFAULT_REPORT_LOOKBACK_DAYS = 90
 
+# P1.5-2：候选 ratio 校验合理区间（best 候选 ratio 不在此区间时尝试 candidates_json）
+RATIO_PLAUSIBLE_MIN = 0.05
+RATIO_PLAUSIBLE_MAX = 0.95
+
+
+def _parse_candidates_json(s: Optional[str]) -> list[dict]:
+    """P1.5-2：解析 overseas_revenue.candidates_json，返回候选 dict 列表。
+
+    容错：JSON 解析失败 / 字段缺失 → 返回空列表。
+    """
+    if not s:
+        return []
+    try:
+        return json.loads(s)
+    except (ValueError, TypeError):
+        return []
+
+
+def _pick_plausible_candidate(
+    candidates: list[dict],
+    total_revenue: float,
+    *,
+    ratio_min: float = RATIO_PLAUSIBLE_MIN,
+    ratio_max: float = RATIO_PLAUSIBLE_MAX,
+) -> tuple[Optional[float], Optional[str]]:
+    """P1.5-2：从候选中挑出 ratio 最合理的境外收入（策略层 ratio 校验）。
+
+    选择规则：
+    1. 过滤 is_total_row=True 的候选（明显是总营收）
+    2. 计算每个候选的 ratio = revenue_yuan / total_revenue
+    3. 过滤 ratio 在 [ratio_min, ratio_max] 内
+    4. 在剩余候选中按 confidence（high>medium>low）和金额排序，选最佳
+
+    Returns:
+        (overseas_revenue_yuan, parse_warning)
+        - 若无可信候选：返回 (None, "no_plausible_candidate_in_json")
+        - 若找到候选：返回 (revenue_yuan, "candidate_chose_from_json:...")
+    """
+    if not candidates or total_revenue <= 0:
+        return None, None
+
+    non_total = [c for c in candidates if not c.get("is_total_row", False)]
+    if not non_total:
+        return None, "all_candidates_are_total_row"
+
+    confidence_rank = {"high": 3, "medium": 2, "low": 1}
+    plausible = []
+    for c in non_total:
+        rev_yuan = c.get("revenue_yuan")
+        if rev_yuan is None or rev_yuan <= 0:
+            continue
+        ratio = float(rev_yuan) / total_revenue
+        if ratio_min <= ratio <= ratio_max:
+            plausible.append((c, ratio))
+
+    if not plausible:
+        return None, "no_plausible_candidate_in_json"
+
+    # 按 confidence desc, 与 0.5 距离 asc（最"典型"的境外占比）
+    plausible.sort(
+        key=lambda x: (
+            -confidence_rank.get(x[0].get("confidence", "medium"), 2),
+            abs(x[1] - 0.5),
+        )
+    )
+    best_c, best_ratio = plausible[0]
+    warn = (
+        f"candidate_chose_from_json:region={best_c.get('region_name')}"
+        f",revenue_yi={float(best_c.get('revenue_yuan', 0))/1e8:.2f}"
+        f",ratio={best_ratio:.2f}"
+    )
+    return float(best_c.get("revenue_yuan")), warn
+
 
 def _compute_reports_coverage(
     store: DuckDBStore,
@@ -125,6 +200,8 @@ def evaluate_overseas_full(
     config: Optional[StrategyConfig] = None,
     show_progress: bool = True,
     sina_source: Optional[SinaFinancialSource] = None,
+    neglect_collector: Optional[NeglectEvidenceCollector] = None,
+    enable_neglect_evidence: bool = False,
 ) -> list[ScreeningResult]:
     """状态化入口：每只进入策略三评估的股票都返回一个 ScreeningResult。
 
@@ -136,6 +213,9 @@ def evaluate_overseas_full(
         period: 报告期，如 "2025A"
         config: 策略参数
         sina_source: 可选的新浪源（不传则 lazy 实例化，失败降级）
+        neglect_collector: P1.5-3 被忽视证据 collector。传 None 且 enable_neglect_evidence=True
+            时 lazy 实例化。
+        enable_neglect_evidence: 关闭则跳过新闻/概念查询（避免不必要的网络调用）。
     """
     config = config or StrategyConfig()
     if candidates.empty:
@@ -148,7 +228,7 @@ def evaluate_overseas_full(
     # 加载 overseas_revenue，构造 overseas_map（含 P1-3 parse_warning 元数据）
     overseas_df = store.load_overseas_revenue()
     overseas_map: dict[str, dict[int, float]] = {}
-    overseas_meta: dict[tuple[str, int], dict] = {}  # (code, year) → {parse_warning, confidence}
+    overseas_meta: dict[tuple[str, int], dict] = {}  # (code, year) → {parse_warning, confidence, candidates}
     if not overseas_df.empty:
         overseas_df = overseas_df.copy()
         overseas_df["revenue_yuan"] = (
@@ -165,10 +245,11 @@ def evaluate_overseas_full(
             overseas_map.setdefault(row["stock_code"], {})[
                 int(row["report_year"])
             ] = row["revenue_yuan"]
-            # P1-3：保留 parse_warning / confidence 元数据
+            # P1-3：保留 parse_warning / confidence 元数据；P1.5-2：保留 candidates_json
             overseas_meta[(row["stock_code"], int(row["report_year"]))] = {
                 "parse_warning": row.get("parse_warning"),
                 "confidence": row.get("confidence"),
+                "candidates": _parse_candidates_json(row.get("candidates_json")),
             }
 
     if sina_source is None:
@@ -176,6 +257,15 @@ def evaluate_overseas_full(
             sina_source = SinaFinancialSource()
         except Exception:
             sina_source = None
+
+    # P1.5-3：被忽视证据 collector（默认关闭，按需开启）
+    if enable_neglect_evidence and neglect_collector is None:
+        try:
+            neglect_collector = NeglectEvidenceCollector()
+        except Exception:
+            neglect_collector = None
+    if not enable_neglect_evidence:
+        neglect_collector = None
 
     out: list[ScreeningResult] = []
     iterator = zip(pool["code"], pool["name"], pool["sw_first"])
@@ -188,6 +278,7 @@ def evaluate_overseas_full(
             sw_first=str(sw_first), config=config,
             overseas_map=overseas_map, overseas_meta=overseas_meta,
             sina_source=sina_source,
+            neglect_collector=neglect_collector,
             run_id=run_id, period=period,
         )
         out.append(result)
@@ -207,6 +298,7 @@ def _evaluate_one_to_result(
     sina_source: Optional[SinaFinancialSource],
     run_id: str,
     period: str,
+    neglect_collector: Optional[NeglectEvidenceCollector] = None,
 ) -> ScreeningResult:
     """单股评估，返回带 status + reason + metrics 的 ScreeningResult。"""
     metrics = MetricsSchema()
@@ -286,6 +378,25 @@ def _evaluate_one_to_result(
 
         overseas_ratio = overseas_revenue / revenue
 
+        # P1.5-2：策略层 ratio 校验。当 best 候选 ratio 异常（>0.95 或 <0.05）时，
+        # 尝试从 candidates_json 挑出 ratio 更合理的候选。
+        ratio_parse_warning: Optional[str] = None
+        if overseas_ratio >= RATIO_PLAUSIBLE_MAX or overseas_ratio < RATIO_PLAUSIBLE_MIN:
+            meta_for_ratio = overseas_meta.get((code, latest_year), {})
+            cands = meta_for_ratio.get("candidates") or []
+            alt_revenue, alt_warn = _pick_plausible_candidate(
+                cands, float(revenue),
+                ratio_min=RATIO_PLAUSIBLE_MIN,
+                ratio_max=RATIO_PLAUSIBLE_MAX,
+            )
+            if alt_revenue is not None and alt_revenue > 0:
+                overseas_revenue = alt_revenue
+                overseas_ratio = overseas_revenue / revenue
+                ratio_parse_warning = alt_warn or "candidate_chose_from_json"
+            elif alt_warn:
+                # 候选都不合理 → 记录原因，保持原值，后续阈值检查会 reject
+                ratio_parse_warning = alt_warn
+
         # 3. PE 历史
         try:
             pe_hist = source.get_pe_pb_history(code, years=5)
@@ -324,14 +435,60 @@ def _evaluate_one_to_result(
         metrics.overseas.overseas_ratio = float(overseas_ratio)
         metrics.overseas.overseas_yoy = float(overseas_yoy) if overseas_yoy is not None else None
         metrics.overseas.overseas_revenue_yi = float(overseas_revenue) / 1e8
+        metrics.overseas.total_revenue_yi = float(revenue) / 1e8
         if cashflow.get("ocf_to_profit") is not None:
             metrics.quality.ocf_to_net_profit = float(cashflow["ocf_to_profit"])
+        # P1.5-6：补全 legacy CSV 绝对值字段
+        if cashflow.get("ocf_net_yi") is not None:
+            metrics.quality.ocf_net_yi = float(cashflow["ocf_net_yi"])
+        if cashflow.get("net_profit_yi") is not None:
+            metrics.quality.net_profit_yi = float(cashflow["net_profit_yi"])
         if leverage.get("debt_ratio") is not None:
             metrics.quality.debt_ratio = float(leverage["debt_ratio"])
+        if leverage.get("total_liabilities_yi") is not None:
+            metrics.quality.total_liabilities_yi = float(leverage["total_liabilities_yi"])
+        if leverage.get("total_assets_yi") is not None:
+            metrics.quality.total_assets_yi = float(leverage["total_assets_yi"])
+        # P1.5-6：一致预期补全
+        if consensus.get("eps_current") is not None:
+            metrics.catalyst.eps_current = float(consensus["eps_current"])
+        if consensus.get("eps_forecast_y1") is not None:
+            metrics.catalyst.eps_forecast_y1 = float(consensus["eps_forecast_y1"])
+        if consensus.get("eps_forecast_y2") is not None:
+            metrics.catalyst.eps_forecast_y2 = float(consensus["eps_forecast_y2"])
+        if consensus.get("eps_y1_growth") is not None:
+            metrics.catalyst.eps_y1_growth = float(consensus["eps_y1_growth"])
+        if consensus.get("eps_y2_growth") is not None:
+            metrics.catalyst.eps_y2_growth = float(consensus["eps_y2_growth"])
         # P1-2：研报覆盖度（被忽视证据之一；不改硬过滤，仅填 metrics）
         metrics.catalyst.reports_count_90d = _compute_reports_coverage(
             store, code, DEFAULT_REPORT_LOOKBACK_DAYS
         )
+        # P1.5-3：被忽视证据链（news / concept / hot / relative_return / neglect_evidence）
+        if neglect_collector is not None:
+            try:
+                metrics.catalyst.news_count_30d = neglect_collector.get_news_count_30d(code)
+            except Exception:
+                pass
+            try:
+                metrics.catalyst.is_ai_related = neglect_collector.is_ai_related(code)
+            except Exception:
+                pass
+            try:
+                metrics.catalyst.hot_reason_count_30d = neglect_collector.get_hot_reason_count_30d(code)
+            except Exception:
+                pass
+            try:
+                metrics.catalyst.relative_return_60d = neglect_collector.get_relative_return_60d(code)
+            except Exception:
+                pass
+            metrics.catalyst.neglect_evidence = neglect_collector.compute_neglect_evidence(
+                reports_count_90d=metrics.catalyst.reports_count_90d,
+                news_count_30d=metrics.catalyst.news_count_30d,
+                is_ai_related=metrics.catalyst.is_ai_related,
+                hot_reason_count_30d=metrics.catalyst.hot_reason_count_30d,
+                relative_return_60d=metrics.catalyst.relative_return_60d,
+            )
 
         # 6. 同比异常 → watch（parse_warning），不直接 rejected
         if config.sanity_check_yoy and is_yoy_anomaly(overseas_yoy):
@@ -342,12 +499,18 @@ def _evaluate_one_to_result(
                 **common, watch_reason="parse_warning", metrics=metrics
             )
 
-        # 6.5 P1-3：overseas_revenue 表里携带的 parse_warning（多年交叉校验/低置信度）
+        # 6.5 P1-3 + P1.5-2：合并 parse_warning
+        # 来源：(a) overseas_revenue 表 db_parse_warning（多年交叉/低置信度）
+        #       (b) P1.5-2 ratio 校验产生的 ratio_parse_warning
         meta = overseas_meta.get((code, latest_year), {})
         db_parse_warning = meta.get("parse_warning")
         confidence = meta.get("confidence")
-        if db_parse_warning:
-            metrics.overseas.parse_warning = db_parse_warning
+        combined_warning_parts = [
+            p for p in (db_parse_warning, ratio_parse_warning) if p
+        ]
+        combined_warning = "; ".join(combined_warning_parts) or None
+        if combined_warning:
+            metrics.overseas.parse_warning = combined_warning
             return ScreeningResult.watch(
                 **common, watch_reason="parse_warning", metrics=metrics
             )
@@ -421,7 +584,7 @@ def _result_to_legacy_dict(result: ScreeningResult) -> Optional[dict]:
         "sw_first": "",
         "report_date": None,
         "overseas_revenue_yi": m.overseas.overseas_revenue_yi,
-        "revenue_yi": None,
+        "revenue_yi": m.overseas.total_revenue_yi,
         "overseas_ratio": m.overseas.overseas_ratio,
         "overseas_yoy": m.overseas.overseas_yoy,
         "overseas_data_year": None,
@@ -430,6 +593,16 @@ def _result_to_legacy_dict(result: ScreeningResult) -> Optional[dict]:
         # 扩展条件字段（从 metrics 拿；旧脚本按列名存在性兼容）
         "ocf_to_profit": m.quality.ocf_to_net_profit,
         "debt_ratio": m.quality.debt_ratio,
+        # P1.5-6：legacy CSV 字段补全（绝对值 + 一致预期）
+        "ocf_net_yi": m.quality.ocf_net_yi,
+        "net_profit_yi": m.quality.net_profit_yi,
+        "total_liabilities_yi": m.quality.total_liabilities_yi,
+        "total_assets_yi": m.quality.total_assets_yi,
+        "eps_current": m.catalyst.eps_current,
+        "eps_forecast_y1": m.catalyst.eps_forecast_y1,
+        "eps_forecast_y2": m.catalyst.eps_forecast_y2,
+        "eps_y1_growth": m.catalyst.eps_y1_growth,
+        "eps_y2_growth": m.catalyst.eps_y2_growth,
     }
 
 

@@ -173,6 +173,32 @@ class TestSelectBestRecord:
         assert best is not None
         assert any("multiple_high_confidence_candidates" in w for w in warns)
 
+    def test_p15_2_multi_high_large_gap_picks_smaller(self):
+        """P1.5-2：max/min > 5x 时取最小（避免误抓总营收）。
+
+        600690 真实案例：max=1429 yi（总营收）vs min=62 yi（真实境外）。
+        旧逻辑：取 max=1429 yi → ratio>0.95 被剔除
+        新逻辑：取 min=62 yi + 标 parse_warning
+        """
+        records = [
+            self._rec(142_900_000_000, confidence="high"),  # 总营收混入
+            self._rec(6_200_000_000, confidence="high"),    # 真实境外
+        ]
+        best, warns = select_best_record(records)
+        assert best is not None
+        assert best.revenue_yuan == 6_200_000_000  # 取最小
+        assert any("multi_high_chose_smaller" in w for w in warns)
+
+    def test_p15_2_multi_high_small_gap_picks_larger(self):
+        """max/min < 5x 时仍取最大（多个境外分区的最大单区）。"""
+        records = [
+            self._rec(10_000_000_000, confidence="high"),
+            self._rec(3_000_000_000, confidence="high"),  # 3.3x，未到 5x
+        ]
+        best, warns = select_best_record(records)
+        assert best is not None
+        assert best.revenue_yuan == 10_000_000_000
+
     def test_warning_when_best_confidence_low(self):
         records = [self._rec(1_000_000_000, confidence="low")]
         best, warns = select_best_record(records)

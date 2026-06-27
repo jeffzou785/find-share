@@ -72,6 +72,13 @@ OVERSEAS_KEYWORDS = [
     "国际",  # 三一重工用"国际"作为境外行
     "其他(境外)",
     "国外（境外）",
+    # P1.5-2：区域级境外关键词（如部分年报不分"境外"，直接列地区）
+    "美洲", "北美", "南美",
+    "欧洲", "欧盟",
+    "亚洲", "东南亚", "东亚",
+    "非洲",
+    "大洋洲",
+    "日韩", "中日韩",
 ]
 
 # 国内关键词（用于校验：如果表格里同时有"境内"和"境外"，可信度高）
@@ -390,16 +397,23 @@ def summarize_results(results: list[ParseResult]) -> dict:
 # 置信度排序：high > medium > low
 _CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1}
 
+# P1.5-2：多 high 候选金额差异倍数阈值（max/min > 此值 → 误抓总营收风险高）
+MULTI_HIGH_AMOUNT_RATIO = 5.0
+
 
 def select_best_record(
     records: list[OverseasRevenueRecord],
 ) -> tuple[Optional[OverseasRevenueRecord], list[str]]:
-    """P1-3：从候选记录里选最佳记录。
+    """P1-3 + P1.5-2：从候选记录里选最佳记录。
 
     选择规则：
     1. 优先 confidence=high 的非 total_row 记录
     2. 若全为 total_row，回退取最大金额（标 warning）
-    3. 同 confidence 取金额最大
+    3. 同 confidence 下：
+       - 仅一条 → 直接取
+       - 多条且金额差异 ≤ 5x → 取最大（可能是分地区境外行汇总的最大单区）
+       - 多条且金额差异 > 5x → P1.5-2 改进：取**最小**值
+         （max 很可能是误抓的总营收，min 更可能是真实的境外行）
 
     Returns:
         (best_record, warnings)
@@ -415,23 +429,41 @@ def select_best_record(
     if not non_total:
         warnings.append("all_candidates_are_total_row")
 
-    # 排序：confidence 高优先 → 金额大优先
-    pool_sorted = sorted(
-        pool,
-        key=lambda r: (_CONFIDENCE_RANK.get(r.confidence, 0), r.revenue_yuan or 0),
-        reverse=True,
-    )
-    best = pool_sorted[0]
-
-    # 高置信度候选多条且金额差距大 → warning
     high_conf = [r for r in pool if r.confidence == "high"]
-    if len(high_conf) > 1:
+    other_conf = [r for r in pool if r.confidence != "high"]
+
+    # P1.5-2：多 high 候选金额差异大时，取最小（避免误抓总营收）
+    if len(high_conf) >= 2:
         amounts = sorted([r.revenue_yuan or 0 for r in high_conf], reverse=True)
-        if amounts[0] > 0 and amounts[-1] / amounts[0] < 0.5:
+        ratio_max_min = amounts[0] / amounts[-1] if amounts[-1] > 0 else float("inf")
+        if ratio_max_min > MULTI_HIGH_AMOUNT_RATIO:
+            # 取最小的高置信度候选
+            best = min(high_conf, key=lambda r: r.revenue_yuan or 0)
             warnings.append(
-                f"multiple_high_confidence_candidates:"
-                f"max={amounts[0]/1e8:.2f}yi min={amounts[-1]/1e8:.2f}yi"
+                f"multi_high_chose_smaller:max={amounts[0]/1e8:.2f}yi "
+                f"min={amounts[-1]/1e8:.2f}yi ratio={ratio_max_min:.1f}x"
             )
+        else:
+            # 金额差异小：取最大（原行为）
+            best = max(high_conf, key=lambda r: r.revenue_yuan or 0)
+            if amounts[0] > 0 and amounts[-1] / amounts[0] < 0.5:
+                warnings.append(
+                    f"multiple_high_confidence_candidates:"
+                    f"max={amounts[0]/1e8:.2f}yi min={amounts[-1]/1e8:.2f}yi"
+                )
+    elif high_conf:
+        best = high_conf[0]
+    else:
+        # 没有 high conf：取其他中置信度最高 + 金额最大
+        pool_sorted = sorted(
+            other_conf,
+            key=lambda r: (_CONFIDENCE_RANK.get(r.confidence, 0), r.revenue_yuan or 0),
+            reverse=True,
+        )
+        best = pool_sorted[0] if pool_sorted else None
+
+    if best is None:
+        return None, warnings
 
     # 最佳记录置信度低 → warning
     if best.confidence == "low":

@@ -24,7 +24,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import pandas as pd
 
-from src.collectors import AkShareSource
+from src.collectors import AkShareSource, LocalCachedSource
 from src.storage import DuckDBStore
 from src.strategies import apply_quality_filter
 from src.strategies.overseas_champion import (
@@ -39,8 +39,9 @@ def main() -> int:
     print("Phase 3: 策略三（出海隐形冠军）筛选")
     print("=" * 70)
 
-    source = AkShareSource()
     store = DuckDBStore()
+    # P1.5-1：透明走 LocalCachedSource，先读本地，缺失才 fallback AkShare
+    source = LocalCachedSource(store=store, upstream=AkShareSource())
 
     try:
         # 1. 加载候选池
@@ -208,25 +209,24 @@ def _write_md_report(
         "|------|------|------|------------|-----------|------|------|-----|------------|--------|",
     ]
     for _, r in result.iterrows():
-        yoy = (
-            f"{r['overseas_yoy'] * 100:+.1f}%"
-            if pd.notna(r.get("overseas_yoy"))
-            else "N/A"
-        )
-        ocf_ratio = (
-            f"{r['ocf_to_profit']:.2f}"
-            if pd.notna(r.get("ocf_to_profit"))
-            else "N/A"
-        )
-        debt = (
-            f"{r['debt_ratio'] * 100:.1f}%"
-            if pd.notna(r.get("debt_ratio"))
-            else "N/A"
-        )
+        def _fmt(v, fmt: str, scale: float = 1.0, suffix: str = "") -> str:
+            """None / NaN 安全的格式化；缺失返回 'N/A'。"""
+            if v is None or not pd.notna(v):
+                return "N/A"
+            try:
+                return format(v * scale, fmt) + suffix
+            except (TypeError, ValueError):
+                return "N/A"
+        yoy = _fmt(r.get("overseas_yoy"), "+.1f%", scale=100)
+        ocf_ratio = _fmt(r.get("ocf_to_profit"), ".2f")
+        debt = _fmt(r.get("debt_ratio"), ".1f%", scale=100, suffix="%")
+        overseas_rev = _fmt(r.get("overseas_revenue_yi"), ".1f")
+        total_rev = _fmt(r.get("revenue_yi"), ".1f")
+        ratio = _fmt(r.get("overseas_ratio"), ".1f%", scale=100, suffix="%")
+        pe = _fmt(r.get("pe_ttm_current"), ".1f")
         lines.append(
-            f"| {r['code']} | {r['name']} | {r['sw_first']} | "
-            f"{r['overseas_revenue_yi']:.1f} | {r['revenue_yi']:.1f} | "
-            f"{r['overseas_ratio'] * 100:.1f}% | {yoy} | {r['pe_ttm_current']:.1f} | "
+            f"| {r['code']} | {r['name']} | {r.get('sw_first', '')} | "
+            f"{overseas_rev} | {total_rev} | {ratio} | {yoy} | {pe} | "
             f"{ocf_ratio} | {debt} |"
         )
 

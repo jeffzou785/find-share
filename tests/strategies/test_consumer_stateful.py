@@ -373,3 +373,100 @@ class TestP11NewSignals:
         )
         r = results[0]
         assert r.status == Status.HIT
+
+
+class TestP15MultiWindowPercentile:
+    """P1.5-4：PE/PB 分位窗口参数化（3y / 5y / 10y）回归测试。"""
+
+    def test_history_years_validates(self):
+        """非法窗口值抛 ValueError。"""
+        from src.strategies.consumer_reversal import SUPPORTED_HISTORY_WINDOWS
+        with pytest.raises(ValueError):
+            StrategyConfig(history_years=7)
+        assert SUPPORTED_HISTORY_WINDOWS == (3, 5, 10)
+
+    def test_all_windows_filled_in_metrics(self, base_candidates):
+        """3y/5y/10y 三个窗口的分位都写入 metrics.valuation。"""
+        # 构造近 10 年 PE 历史（约 520 周），最近 1 年降到 10，前期保持 50
+        n = 520
+        dates = pd.date_range(end=pd.Timestamp.now(), periods=n, freq="W")
+        values = [50.0] * (n - 52) + [10.0] * 52
+        pe_hist = pd.DataFrame({
+            "date": dates, "pe_ttm": values,
+            "pb": [5.0] * (n - 52) + [1.0] * 52,
+        })
+        fin = _financials_basic([
+            (2023, 12, 100.0), (2024, 12, 50.0), (2025, 12, 80.0),
+        ])
+        source = MockSource(pe_hist=pe_hist, fin=fin)
+        results = evaluate_consumer_full(
+            source=source, candidates=base_candidates,
+            run_id="r1", period="2025A", show_progress=False,
+            config=StrategyConfig(min_history_samples=30),
+        )
+        r = results[0]
+        assert r.status == Status.HIT
+        # 三个窗口的分位都应填入
+        assert r.metrics.valuation.pe_pct_3y is not None
+        assert r.metrics.valuation.pe_pct_5y is not None
+        assert r.metrics.valuation.pe_pct_10y is not None
+        assert r.metrics.valuation.pb_pct_3y is not None
+        assert r.metrics.valuation.pb_pct_5y is not None
+        assert r.metrics.valuation.pb_pct_10y is not None
+        # history_window 字段记录当前使用的窗口
+        assert r.metrics.valuation.history_window == "5y"
+
+    def test_3y_window_picked_when_configured(self, base_candidates):
+        """history_years=3 → 阈值用 3y 分位；history_window='3y'。"""
+        n = 520
+        dates = pd.date_range(end=pd.Timestamp.now(), periods=n, freq="W")
+        values = [50.0] * (n - 52) + [10.0] * 52
+        pe_hist = pd.DataFrame({
+            "date": dates, "pe_ttm": values,
+            "pb": [5.0] * (n - 52) + [1.0] * 52,
+        })
+        fin = _financials_basic([
+            (2023, 12, 100.0), (2024, 12, 50.0), (2025, 12, 80.0),
+        ])
+        source = MockSource(pe_hist=pe_hist, fin=fin)
+        results = evaluate_consumer_full(
+            source=source, candidates=base_candidates,
+            run_id="r1", period="2025A", show_progress=False,
+            # 3y 窗口分位 ≈33%，放宽阈值便于验证 history_window 选取
+            config=StrategyConfig(min_history_samples=30, history_years=3,
+                                  pe_percentile_max=50.0),
+        )
+        r = results[0]
+        assert r.status == Status.HIT
+        assert r.metrics.valuation.history_window == "3y"
+
+
+class TestP15ConsumerIndustryCoverage:
+    """P1.5-4：扩展消费行业映射（美妆/个护/医美/纺服/服务消费/轻工）。"""
+
+    def test_extended_industries_targeted(self):
+        """扩展行业命中等价于 '美容护理'。"""
+        from src.strategies.consumer_reversal import TARGET_INDUSTRIES
+        for industry in ("美容护理", "化妆品", "个护用品", "医美", "纺织服饰",
+                         "服装家纺", "社会服务", "餐饮", "家居用品"):
+            assert industry in TARGET_INDUSTRIES
+
+    def test_extended_industry_hits(self):
+        """扩展行业（化妆品）的候选股能进入评估。"""
+        from src.strategies.consumer_reversal import evaluate_consumer_full
+        candidates = pd.DataFrame(
+            [{"code": "600999", "name": "X化妆", "sw_first": "化妆品"}]
+        )
+        source = MockSource(pe_hist=_pe_history(120, value=10.0),
+                            fin=_financials_basic([(2023, 12, 100.0),
+                                                   (2024, 12, 50.0),
+                                                   (2025, 12, 80.0)]))
+        results = evaluate_consumer_full(
+            source=source, candidates=candidates,
+            run_id="r1", period="2025A", show_progress=False,
+            config=StrategyConfig(min_history_samples=100),
+        )
+        assert len(results) == 1
+        # 至少进入了评估（不是因行业不符被排除）
+        assert results[0].status != Status.DATA_MISSING or \
+               results[0].data_missing_reason != "pe_history_missing"

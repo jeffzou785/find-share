@@ -45,6 +45,16 @@ def _fin_with_revenue(revenue: float = 1e10, year: int = 2025) -> pd.DataFrame:
     ])
 
 
+def _candidates_json(records: list[dict]) -> str:
+    """构造 candidates_json 字符串。
+
+    每条记录至少含 region_name / revenue / revenue_unit / revenue_yuan /
+    is_total_row / confidence 字段（与 parser._record_to_candidate_dict 对齐）。
+    """
+    import json
+    return json.dumps(records, ensure_ascii=False)
+
+
 @pytest.fixture
 def store_with_overseas(tmp_path: Path):
     """构造一个 DuckDBStore 并预填 overseas_revenue。
@@ -368,6 +378,78 @@ class TestP12ReportsCoverage:
             )
             r = results[0]
             assert r.metrics.catalyst.reports_count_90d == 5
+        finally:
+            store.close()
+
+
+class TestP152RatioCheckFromCandidatesJson:
+    """P1.5-2：策略层从 candidates_json 选合理候选。
+
+    模拟 600690 场景：parser best=1429yi（误抓总营收）→ ratio>0.95，
+    策略层尝试 candidates_json 中的 62yi（ratio=0.4），落入 watch。
+    """
+
+    def test_implausible_ratio_fallbacks_to_candidate(
+        self, tmp_path: Path, base_candidates, hit_config
+    ):
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+        # best=200yi（明显超过总营收 100yi），ratio=2.0 不合理
+        cands = _candidates_json([
+            {"region_name": "境外", "revenue": 200.0, "revenue_unit": "亿元",
+             "revenue_yuan": 200.0e8, "is_total_row": False, "confidence": "high"},
+            {"region_name": "境外", "revenue": 30.0, "revenue_unit": "亿元",
+             "revenue_yuan": 30.0e8, "is_total_row": False, "confidence": "high"},
+        ])
+        store.save_overseas_revenue([{
+            "stock_code": "600031", "report_year": 2025, "region_name": "境外",
+            "revenue": 200.0, "revenue_unit": "亿元",
+            "source_page": 1, "raw_text": "", "pdf_path": "",
+            "candidates_json": cands, "parse_warning": None, "confidence": "high",
+        }])
+        # 总营收 100 亿
+        source = MockSource(_pe_history_low(current=20.0), _fin_with_revenue(revenue=1e10))
+        try:
+            results = evaluate_overseas_full(
+                source=source, store=store, candidates=base_candidates,
+                run_id="r1", period="2025A", show_progress=False,
+                config=hit_config, sina_source=None,
+            )
+            r = results[0]
+            # 选中 30yi（ratio=0.3）而非 200yi（ratio=2.0）
+            assert r.status == Status.WATCH
+            assert r.watch_reason == "parse_warning"
+            assert r.metrics.overseas.overseas_revenue_yi == pytest.approx(30.0, abs=0.1)
+            assert r.metrics.overseas.overseas_ratio == pytest.approx(0.3, abs=0.01)
+            assert "candidate_chose_from_json" in (r.metrics.overseas.parse_warning or "")
+        finally:
+            store.close()
+
+    def test_plausible_best_does_not_trigger_fallback(
+        self, tmp_path: Path, base_candidates, hit_config
+    ):
+        """best=30yi / total=100yi → ratio=0.3 合理，不触发 candidates fallback。"""
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+        cands = _candidates_json([
+            {"region_name": "境外", "revenue": 30.0, "revenue_unit": "亿元",
+             "revenue_yuan": 30.0e8, "is_total_row": False, "confidence": "high"},
+        ])
+        store.save_overseas_revenue([{
+            "stock_code": "600031", "report_year": 2025, "region_name": "境外",
+            "revenue": 30.0, "revenue_unit": "亿元",
+            "source_page": 1, "raw_text": "", "pdf_path": "",
+            "candidates_json": cands, "parse_warning": None, "confidence": "high",
+        }])
+        source = MockSource(_pe_history_low(current=20.0), _fin_with_revenue(revenue=1e10))
+        try:
+            results = evaluate_overseas_full(
+                source=source, store=store, candidates=base_candidates,
+                run_id="r1", period="2025A", show_progress=False,
+                config=hit_config, sina_source=None,
+            )
+            r = results[0]
+            assert r.status == Status.HIT
+            assert r.metrics.overseas.overseas_ratio == pytest.approx(0.3, abs=0.01)
+            assert r.metrics.overseas.parse_warning is None
         finally:
             store.close()
 

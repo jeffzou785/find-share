@@ -17,8 +17,12 @@ class ValuationMetrics:
     pe_ttm: Optional[float] = None
     pe_pct_3y: Optional[float] = None
     pe_pct_5y: Optional[float] = None
+    pe_pct_10y: Optional[float] = None  # P1.5-4：新增 10 年窗口
     pb: Optional[float] = None
     pb_pct_3y: Optional[float] = None
+    pb_pct_5y: Optional[float] = None  # P1.5-4：新增 5 年窗口
+    pb_pct_10y: Optional[float] = None  # P1.5-4：新增 10 年窗口
+    history_window: Optional[str] = None  # P1.5-4：当前阈值使用的窗口（"3y" / "5y" / "10y"）
     market_cap_yi: Optional[float] = None  # 市值（亿元）
 
 
@@ -37,6 +41,11 @@ class QualityMetrics:
     roe: Optional[float] = None
     ocf_to_net_profit: Optional[float] = None
     debt_ratio: Optional[float] = None
+    # P1.5-6：legacy CSV 字段补全（绝对值，单位"亿元"）
+    ocf_net_yi: Optional[float] = None
+    net_profit_yi: Optional[float] = None
+    total_liabilities_yi: Optional[float] = None
+    total_assets_yi: Optional[float] = None
 
 
 @dataclass
@@ -44,6 +53,7 @@ class OverseasMetrics:
     overseas_ratio: Optional[float] = None
     overseas_yoy: Optional[float] = None
     overseas_revenue_yi: Optional[float] = None
+    total_revenue_yi: Optional[float] = None  # 总营收（亿元），供 legacy CSV 入口使用
     parse_warning: Optional[str] = None  # 单位识别疑点、跨页断字等
 
 
@@ -52,6 +62,16 @@ class CatalystMetrics:
     reports_count_90d: Optional[int] = None
     hot_reason_count_30d: Optional[int] = None
     news_count_30d: Optional[int] = None
+    # P1.5-3：被忽视证据链
+    is_ai_related: Optional[bool] = None
+    relative_return_60d: Optional[float] = None
+    neglect_evidence: Optional[str] = None  # 聚合的可读证据
+    # P1.5-6：一致预期（legacy CSV 补全）
+    eps_current: Optional[float] = None
+    eps_forecast_y1: Optional[float] = None
+    eps_forecast_y2: Optional[float] = None
+    eps_y1_growth: Optional[float] = None
+    eps_y2_growth: Optional[float] = None
 
 
 @dataclass

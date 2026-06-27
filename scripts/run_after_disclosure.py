@@ -37,7 +37,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import pandas as pd
 
-from src.collectors import AkShareSource
+from src.collectors import AkShareSource, LocalCachedSource
 from src.config import config
 from src.screening import ConfigSchema, ScreeningResult, Status, Thresholds
 from src.screening.schemas import DataSources, RuntimeConfig
@@ -169,6 +169,7 @@ def _run_strategy(
     run_id: str,
     period: str,
     skip_codes: set[str],
+    enable_neglect_evidence: bool = False,
 ) -> list[ScreeningResult]:
     """跑单个策略；返回 ScreeningResult 列表（已处理 --resume 跳过）。"""
     if candidates_subset.empty:
@@ -184,6 +185,7 @@ def _run_strategy(
             source=source, store=store, candidates=candidates_subset,
             run_id=run_id, period=period, show_progress=True,
             config=_build_overseas_config(None),
+            enable_neglect_evidence=enable_neglect_evidence,
         )
     else:
         raise ValueError(f"未知 strategy: {strategy}")
@@ -461,6 +463,10 @@ def main() -> int:
     parser.add_argument("--non-em-max-workers", type=int, default=2)
     parser.add_argument("--single-request-timeout", type=int, default=30)
     parser.add_argument("--retry-times", type=int, default=2)
+    parser.add_argument(
+        "--enable-neglect-evidence", action="store_true",
+        help="P1.5-3：开启被忽视证据链（新闻/概念/热点），增加网络耗时",
+    )
     args = parser.parse_args()
 
     period = args.period
@@ -530,7 +536,8 @@ def main() -> int:
             if skip_codes:
                 print(f"  ✓ --resume 跳过 {len(skip_codes)} 只已完成")
 
-        source = AkShareSource()
+        # P1.5-1：默认走 LocalCachedSource，先读 DuckDB，缺失才 fallback AkShare + 回写
+        source = LocalCachedSource(store=store, upstream=AkShareSource())
 
         # 跑策略
         consumer_results: list[ScreeningResult] = []
@@ -552,6 +559,7 @@ def main() -> int:
                 strategy="overseas", source=source, store=store,
                 candidates_subset=candidates_subset,
                 run_id=run_id, period=period, skip_codes=skip_codes,
+                enable_neglect_evidence=args.enable_neglect_evidence,
             )
             c = _save_results_to_store(store, run_id, overseas_results)
             for k, v in c.items():
