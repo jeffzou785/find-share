@@ -467,3 +467,108 @@ class TestIsYoyAnomaly:
 
     def test_none_not_anomaly(self):
         assert is_yoy_anomaly(None) is False
+
+
+class TestP22QuarterlyPeriod:
+    """P2-2 半年报/季报扩展：季报场景不强求海外收入硬过滤。"""
+
+    def test_q1_without_overseas_data_goes_through(
+        self, tmp_path: Path, base_candidates, hit_config
+    ):
+        """季报场景下候选股没有 overseas_revenue 不应被判 data_missing。"""
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")  # 不预填 overseas
+        source = MockSource(_pe_history_low(current=20.0), _fin_with_revenue(revenue=1e10))
+        try:
+            results = evaluate_overseas_full(
+                source=source, store=store,
+                candidates=base_candidates, run_id="r1", period="2025Q1",
+                show_progress=False, config=hit_config, sina_source=None,
+            )
+            r = results[0]
+            # 不应进入 data_missing；应通过 PE/财务阈值（海外跳过）
+            assert r.status != Status.DATA_MISSING
+            assert r.metrics.source_status.overseas_parser == "missing"
+        finally:
+            store.close()
+
+    def test_q1_skips_overseas_ratio_reject(
+        self, tmp_path: Path, base_candidates, hit_config
+    ):
+        """季报场景下即使 overseas_ratio < min 也不应被 rejected。"""
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+        # 海外 30 亿，营收 200 亿 → ratio = 0.15 < 0.30
+        # 年报会被判 overseas_ratio_too_low；季报应跳过
+        rows = [
+            {"stock_code": "600031", "report_year": 2024, "region_name": "境外",
+             "revenue": 30.0, "revenue_unit": "亿元",
+             "source_page": 1, "raw_text": "", "pdf_path": ""},
+        ]
+        store.save_overseas_revenue(rows)
+        source = MockSource(_pe_history_low(current=20.0), _fin_with_revenue(revenue=2e10))
+        try:
+            results = evaluate_overseas_full(
+                source=source, store=store,
+                candidates=base_candidates, run_id="r1", period="2025Q1",
+                show_progress=False, config=hit_config, sina_source=None,
+            )
+            r = results[0]
+            assert r.status == Status.HIT
+            # 季报场景 hit_reason 仍是 all_thresholds_met；source_status 标 overseas missing
+            # 但 overseas_ratio 仍填入 metrics 作为 context（不参与硬过滤）
+            assert r.metrics.overseas.overseas_ratio is not None
+        finally:
+            store.close()
+
+    def test_q1_pe_still_filtered(
+        self, tmp_path: Path, base_candidates, hit_config
+    ):
+        """季报场景下 PE 阈值仍然生效。"""
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+        source = MockSource(_pe_history_low(current=50.0), _fin_with_revenue(revenue=1e10))
+        try:
+            results = evaluate_overseas_full(
+                source=source, store=store,
+                candidates=base_candidates, run_id="r1", period="2025Q1",
+                show_progress=False, config=hit_config, sina_source=None,
+            )
+            r = results[0]
+            assert r.status == Status.REJECTED
+            assert r.reject_reason == "pe_ttm_too_high"
+        finally:
+            store.close()
+
+    def test_annual_still_requires_overseas(
+        self, tmp_path: Path, base_candidates, hit_config
+    ):
+        """年报场景下没有 overseas_revenue 仍判 data_missing。"""
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+        source = MockSource(_pe_history_low(current=20.0), _fin_with_revenue(revenue=1e10))
+        try:
+            results = evaluate_overseas_full(
+                source=source, store=store,
+                candidates=base_candidates, run_id="r1", period="2025A",
+                show_progress=False, config=hit_config, sina_source=None,
+            )
+            r = results[0]
+            assert r.status == Status.DATA_MISSING
+            assert r.data_missing_reason == "overseas_revenue_missing"
+        finally:
+            store.close()
+
+    def test_half_year_still_requires_overseas(
+        self, tmp_path: Path, base_candidates, hit_config
+    ):
+        """半年报场景仍要求 overseas_revenue（附注较全）。"""
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+        source = MockSource(_pe_history_low(current=20.0), _fin_with_revenue(revenue=1e10))
+        try:
+            results = evaluate_overseas_full(
+                source=source, store=store,
+                candidates=base_candidates, run_id="r1", period="2025H",
+                show_progress=False, config=hit_config, sina_source=None,
+            )
+            r = results[0]
+            assert r.status == Status.DATA_MISSING
+            assert r.data_missing_reason == "overseas_revenue_missing"
+        finally:
+            store.close()

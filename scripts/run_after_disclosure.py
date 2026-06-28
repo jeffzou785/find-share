@@ -39,7 +39,15 @@ import pandas as pd
 
 from src.collectors import AkShareSource, LocalCachedSource
 from src.config import config
-from src.screening import ConfigSchema, ScreeningResult, Status, Thresholds
+from src.screening import (
+    ConfigSchema,
+    ScreeningResult,
+    Status,
+    Thresholds,
+    compute_score,
+    default_weights,
+    parse_period,
+)
 from src.screening.schemas import DataSources, RuntimeConfig
 from src.storage import DuckDBStore
 from src.strategies.consumer_reversal import (
@@ -53,7 +61,6 @@ from src.strategies.overseas_champion import (
 
 
 STRATEGIES = ("consumer", "overseas", "all")
-REPORT_TYPES = {"A": "annual", "H": "half_year", "Q1": "q1", "Q3": "q3"}
 
 
 def _gen_run_id(period: str) -> str:
@@ -63,11 +70,12 @@ def _gen_run_id(period: str) -> str:
 
 
 def _period_to_report_type(period: str) -> str:
-    """2025A → annual；2025H → half_year；2025Q1 → q1；2025Q3 → q3。"""
-    if not period or len(period) < 5:
-        return "annual"
-    suffix = period[4:].upper()
-    return REPORT_TYPES.get(suffix, "annual")
+    """2025A → annual；2025H → half_year；2025Q1 → q1；2025Q3 → q3。
+
+    无法解析时回退到 annual（保持旧行为）。
+    """
+    info = parse_period(period)
+    return info.kind if info is not None else "annual"
 
 
 def _print_disclosures_coverage(store: DuckDBStore, period: str) -> tuple[int, int, float]:
@@ -147,8 +155,30 @@ def _build_config_schema(
             retry_times=args.retry_times,
             resume=args.resume,
         ),
+        score_weights=default_weights(strategy) if args.enable_scoring else None,
     )
     return cfg
+
+
+def _apply_scoring(
+    results: list[ScreeningResult], strategy: str
+) -> None:
+    """P2-1：对每只股票就地计算子分 + final_score，写回 metrics.score。
+
+    对 hit/watch/rejected 都算（rejected 也能看相对位置）；data_missing/error
+    因为指标基本空，会得到 None，跳过。
+    """
+    for r in results:
+        if r.metrics is None:
+            continue
+        try:
+            r.metrics.score = compute_score(
+                metrics=r.metrics, strategy=strategy,
+                weights=None,  # 用默认权重（按策略）
+            )
+        except Exception as e:
+            # 评分异常不应影响主流程，但要可见
+            print(f"⚠ scoring failed for {r.code}: {type(e).__name__}: {e}")
 
 
 def _filter_candidates_by_codes(
@@ -335,13 +365,22 @@ def _write_markdown_report(
                      ("策略三（出海隐形冠军）", overseas_results)):
         if not rs:
             continue
+        # P2-1：按 final_score 降序排（None 排到最后）
+        def _sort_key(r: ScreeningResult):
+            s = r.metrics.score.final_score if r.metrics and r.metrics.score else None
+            return (s is None, -(s or 0.0))
+
+        sorted_hits = sorted(
+            [x for x in rs if x.status == Status.HIT],
+            key=_sort_key,
+        )
         lines += [
             f"## {name} 命中清单",
             "",
-            "| 代码 | 名称 | PE | PE 分位 | 扣非同比 | 海外占比 | 营收同比 | 毛利率 | 研报90d | hit_reason |",
-            "|------|------|----|--------|---------|---------|---------|--------|--------|-----------|",
+            "| 代码 | 名称 | PE | PE 分位 | 扣非同比 | 海外占比 | 营收同比 | 毛利率 | 研报90d | score | hit_reason |",
+            "|------|------|----|--------|---------|---------|---------|--------|--------|-------|-----------|",
         ]
-        for r in [x for x in rs if x.status == Status.HIT]:
+        for r in sorted_hits:
             m = r.metrics
             pe = f"{m.valuation.pe_ttm:.1f}" if m.valuation.pe_ttm else "-"
             pct = f"{m.valuation.pe_pct_5y:.1f}%" if m.valuation.pe_pct_5y else "-"
@@ -365,9 +404,13 @@ def _write_markdown_report(
                 str(m.catalyst.reports_count_90d)
                 if m.catalyst.reports_count_90d is not None else "-"
             )
+            score = (
+                f"{m.score.final_score:.2f}"
+                if m.score and m.score.final_score is not None else "-"
+            )
             lines.append(
                 f"| {r.code} | {r.name or ''} | {pe} | {pct} | {yoy} | {ratio} "
-                f"| {rev_yoy} | {gm} | {reports} | {r.hit_reason} |"
+                f"| {rev_yoy} | {gm} | {reports} | {score} | {r.hit_reason} |"
             )
         lines.append("")
 
@@ -467,6 +510,10 @@ def main() -> int:
         "--enable-neglect-evidence", action="store_true",
         help="P1.5-3：开启被忽视证据链（新闻/概念/热点），增加网络耗时",
     )
+    parser.add_argument(
+        "--enable-scoring", action="store_true",
+        help="P2-1：开启评分层（写入 metrics.score.final_score），用于排序和 watch 分层",
+    )
     args = parser.parse_args()
 
     period = args.period
@@ -550,6 +597,8 @@ def main() -> int:
                 candidates_subset=candidates_subset,
                 run_id=run_id, period=period, skip_codes=skip_codes,
             )
+            if args.enable_scoring:
+                _apply_scoring(consumer_results, "consumer")
             c = _save_results_to_store(store, run_id, consumer_results)
             for k, v in c.items():
                 all_counts[k] = all_counts.get(k, 0) + v
@@ -561,6 +610,8 @@ def main() -> int:
                 run_id=run_id, period=period, skip_codes=skip_codes,
                 enable_neglect_evidence=args.enable_neglect_evidence,
             )
+            if args.enable_scoring:
+                _apply_scoring(overseas_results, "overseas")
             c = _save_results_to_store(store, run_id, overseas_results)
             for k, v in c.items():
                 all_counts[k] = all_counts.get(k, 0) + v

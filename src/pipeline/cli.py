@@ -47,6 +47,8 @@ SUBCOMMAND_SCRIPTS: dict[str, str] = {
     "baseline": str(SCRIPTS_DIR / "data_source_baseline.py"),
     "baseline-diff": str(SCRIPTS_DIR / "baseline_diff.py"),
     "import-overseas": str(SCRIPTS_DIR / "import_overseas_revenue.py"),
+    # P2-3 监控
+    "monitor": str(SCRIPTS_DIR / "monitor_changes.py"),
 }
 
 
@@ -66,7 +68,7 @@ def _run_script(script_path: str, extra_args: list[str]) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="python -m src.pipeline.cli",
-        description="find-share 统一 CLI（封装 11 个独立脚本）",
+        description="find-share 统一 CLI（封装 13 个独立脚本）",
         epilog="各子命令的详细参数请用 `python -m src.pipeline.cli <cmd> --help` 查看",
     )
     parser.add_argument(

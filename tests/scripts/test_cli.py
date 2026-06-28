@@ -31,7 +31,8 @@ class TestCliRouting:
         assert rc == 0
         # 所有 subcommand 都列出
         for cmd in ("bootstrap", "refresh", "screen", "strategy1",
-                    "strategy3", "reports", "pdf", "rag", "baseline"):
+                    "strategy3", "reports", "pdf", "rag", "baseline",
+                    "monitor"):
             assert cmd in out
 
     def test_unknown_command_errors(self):

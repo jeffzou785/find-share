@@ -333,32 +333,16 @@ P1.5 可以视为完成的标准：
 - 策略一行业覆盖和估值窗口参数写入 `screen_runs.config_json`，可复盘比较。
 - 旧 CSV/Markdown 入口保留关键财务质量和一致预期字段，不因状态化字段缺失而降级。
 
-## 6. P2：后续增强
+## 6. P2：后续增强（✅ 已完成 2026-06-28）
 
-### 6.1 P2-0：统一 CLI
+### 6.1 P2-0：统一 CLI ✅
 
-统一 CLI 可以在 P1.5 完成后优先做，不一定要等评分层。当前已有多个脚本，新用户很难判断该用哪个入口；统一 CLI 对复盘体验提升较大。
+`python3 -m src.pipeline.cli <subcommand>`，封装 13 个脚本（bootstrap/refresh/screen/strategy1/strategy3/reports/pdf/rag/baseline/monitor 等）。
+旧脚本继续保留，CLI 只是统一入口；`screen` 子命令默认调用 `run_after_disclosure.py` 的状态化链路。
 
-建议入口：
+### 6.2 P2-1：评分层 ✅
 
-```bash
-python3 -m src.pipeline.cli bootstrap
-python3 -m src.pipeline.cli screen --period 2025A --strategy all --from-disclosures --limit 30
-python3 -m src.pipeline.cli reports 600519 --max-pdfs 3
-python3 -m src.pipeline.cli rag search "海外订单" --stock 600519
-```
-
-要求：
-
-- 旧脚本继续保留，CLI 只是统一入口。
-- CLI 参数最终调用现有脚本或公共函数，避免复制逻辑。
-- `screen` 子命令默认调用 `run_after_disclosure.py` 的状态化链路。
-
-### 6.2 P2-1：评分层
-
-等 `candidate_scores` 稳定记录多次样本运行后，再设计评分。
-
-可从简单线性模型开始：
+`src/screening/scoring.py` 实现线性模型：
 
 ```text
 final_score =
@@ -370,54 +354,49 @@ final_score =
   - risk_penalty
 ```
 
-约束：
+约束均已满足：
+- 权重写入 `screen_runs.config_json.score_weights`（按策略差异化：consumer neglect=0，overseas neglect=0.20）
+- 评分只用于排序和 watch 分层（不覆盖硬风控）
+- 子分缺失时权重重新归一化（不强行惩罚缺数据）
+- `run_after_disclosure.py --enable-scoring` 触发，命中清单按 `final_score` 降序排
+- 27 个单元测试覆盖
 
-- 权重写入 `screen_runs.config_json`。
-- 评分只用于排序和 watch 分层。
-- 不用评分覆盖硬风控，例如 ST、明显财务异常、海外收入解析异常。
+### 6.3 P2-2：半年报和季报扩展 ✅
 
-### 6.3 P2-2：半年报和季报扩展
+`src/screening/period.py` 提供 `parse_period(period) → PeriodInfo(kind, year, has_overseas_notes)`。
+- 年报 / 半年报：完整海外收入硬过滤
+- 季报（Q1/Q3）：跳过 `overseas_ratio` 硬过滤，仍跑 PE / cashflow / leverage；`overseas_revenue` 缺失不再判 `data_missing`
+- `overseas_champion._evaluate_one_to_result` 增加 `overseas_required` 参数，由 `require_overseas_filter(period)` 控制
 
-年报场景已跑通后，再扩展：
+7 个新测试覆盖（季报场景下 overseas 缺失仍可走完评估、季报 PE 阈值仍生效、年报/半年报保持原行为等）。
 
-- 一季报：重点看扣非 TTM、营收恢复、毛利率变化。
-- 半年报：重点看经营现金流、区域结构变化和可能披露的海外收入。
-- 三季报：验证全年趋势和市场预期差。
+### 6.4 P2-3：动态监控 ✅
 
-注意：
+`src/screening/run_diff.py` + `scripts/monitor_changes.py`：
+- `diff_runs(before, after)` 输出 5 类事件：new_hit / dropped_hit / status_changed / metric_changed / new_parse_warning
+- 关键指标阈值化 diff（PE 变化>5 / 研报数变化>3 / 海外占比变化>10pp / 综合评分变化>0.1）
+- `diff_latest_two_runs(strategy, period)` 便捷方法
+- CLI 子命令：`python3 -m src.pipeline.cli monitor --strategy overseas --period 2025A`
+- 17 个单元测试覆盖
 
-- 季报通常没有完整分地区收入附注，不能强行要求海外收入更新。
-- 策略三海外收入仍以年报/半年报为主，季报更多看收入、利润、现金流、订单线索。
+### 6.5 P2-4：财报 vs 研报一致性校验 ✅
 
-### 6.4 P2-3：动态监控
+`src/screening/consistency.py` 输出软证据（不改硬过滤）：
+- 研报 EPS Y1 预测 vs 财报实际 EPS（偏差>25% → warn，否则 info）
+- 财报海外收入 vs 研报标题关键词匹配：研报未提"海外/境外/出口" → warn（被忽视信号）
+- 区域 / 订单 / 产能关键词命中 → info（一致证据）
+- `check_consistency_batch` 一次性预加载 financials_full / broker_reports / overseas_revenue，避免 N+1
+- 11 个单元测试覆盖
 
-动态监控属于锦上添花，不应早于 P1.5。
+### 6.6 P2-5：Tushare 兜底 ✅（stub）
 
-可监控：
+`src/collectors/tushare_impl.py` 提供 `TushareSource` stub：
+- 锁定 `DataSource` Protocol 接口形状（7 方法）
+- 无 token 时实例化允许，方法调用抛 `NotImplementedError` 并打印激活路径
+- 业务代码已通过 Protocol 抽象，未来切 Tushare 时零修改
+- 3 个单元测试覆盖（实例化、方法抛错、Protocol 形状校验）
 
-- 新披露定期报告。
-- 新增研报覆盖。
-- 热点/新闻数量突变。
-- 候选池估值分位变化。
-- 策略三海外收入解析状态变化。
-
-### 6.5 P2-4：财报 vs 研报一致性校验
-
-后续可以比较：
-
-- 年报海外收入 vs 研报海外业务描述。
-- 研报 EPS 预测 vs 财报实际。
-- 研报提到的订单/产能/区域增长 vs 财报分地区收入。
-
-输出应进入 `watch` 或 Markdown 证据，不直接作为硬过滤。
-
-### 6.6 P2-5：Tushare 兜底
-
-`DataSource` Protocol 已就位。只有当 AkShare 连续不稳定时，再切 Tushare：
-
-- 不作为当前主线。
-- 先跑 `data_source_baseline.py`。
-- 差异超过阈值的字段进入不可替换清单。
+P2 至此全部完成，测试覆盖从 197 → 271（+74）。
 
 ## 7. 当前推荐使用方式
 

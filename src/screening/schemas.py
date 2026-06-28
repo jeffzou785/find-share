@@ -87,6 +87,24 @@ class SourceStatus:
 
 
 @dataclass
+class ScoreMetrics:
+    """P2-1：评分层输出。各子分 0-1，final_score 也 0-1。
+
+    final_score = w1*growth + w2*valuation + w3*quality + w4*catalyst
+                  + w5*neglect - risk_penalty
+    权重来自 ConfigSchema.score_weights（默认按策略不同）。
+    """
+    growth_score: Optional[float] = None
+    valuation_score: Optional[float] = None
+    quality_score: Optional[float] = None
+    catalyst_score: Optional[float] = None
+    neglect_score: Optional[float] = None
+    risk_penalty: Optional[float] = None
+    final_score: Optional[float] = None
+    weights_used: Optional[dict[str, float]] = None
+
+
+@dataclass
 class MetricsSchema:
     valuation: ValuationMetrics = field(default_factory=ValuationMetrics)
     growth: GrowthMetrics = field(default_factory=GrowthMetrics)
@@ -94,6 +112,7 @@ class MetricsSchema:
     overseas: OverseasMetrics = field(default_factory=OverseasMetrics)
     catalyst: CatalystMetrics = field(default_factory=CatalystMetrics)
     source_status: SourceStatus = field(default_factory=SourceStatus)
+    score: ScoreMetrics = field(default_factory=ScoreMetrics)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -141,7 +160,7 @@ class ConfigSchema:
     thresholds: Thresholds = field(default_factory=Thresholds)
     data_sources: DataSources = field(default_factory=DataSources)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
-    score_weights: Optional[dict[str, float]] = None  # P2 评分层启用后写入
+    score_weights: Optional[dict[str, float]] = None  # P2-1 评分层启用后写入
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -156,6 +175,7 @@ class ConfigSchema:
         """用于 --resume 判断配置是否变化。
 
         排除 runtime（max_workers 等不影响结果），只看会影响命中清单的字段。
+        score_weights 也不计入：调权重不应触发重新筛选。
         """
         d = {
             "framework_version": self.framework_version,

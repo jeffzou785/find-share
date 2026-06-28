@@ -35,6 +35,7 @@ from ..collectors.neglect_evidence import NeglectEvidenceCollector
 from ..collectors.sina_impl import SinaFinancialSource
 from ..indicators.valuation import compute_pe_pb_percentile
 from ..screening import MetricsSchema, ScreeningResult, Status
+from ..screening.period import parse_period, require_overseas_filter
 from ..storage import DuckDBStore
 
 
@@ -225,6 +226,11 @@ def evaluate_overseas_full(
     if pool.empty:
         return []
 
+    # P2-2：解析 period 决定海外收入过滤行为
+    # 季报（Q1/Q3）没有完整分地区附注 → 不强求 overseas_revenue 数据
+    period_info = parse_period(period)
+    overseas_required = require_overseas_filter(period)  # 默认 True（含无法解析）
+
     # 加载 overseas_revenue，构造 overseas_map（含 P1-3 parse_warning 元数据）
     overseas_df = store.load_overseas_revenue()
     overseas_map: dict[str, dict[int, float]] = {}
@@ -280,6 +286,7 @@ def evaluate_overseas_full(
             sina_source=sina_source,
             neglect_collector=neglect_collector,
             run_id=run_id, period=period,
+            overseas_required=overseas_required,
         )
         out.append(result)
     return out
@@ -299,8 +306,13 @@ def _evaluate_one_to_result(
     run_id: str,
     period: str,
     neglect_collector: Optional[NeglectEvidenceCollector] = None,
+    overseas_required: bool = True,
 ) -> ScreeningResult:
-    """单股评估，返回带 status + reason + metrics 的 ScreeningResult。"""
+    """单股评估，返回带 status + reason + metrics 的 ScreeningResult。
+
+    P2-2：overseas_required=False（季报场景）时，没有 overseas_revenue 数据
+    不再判 data_missing；改为以财务/估值/质量过滤为主，海外占比作为可选 context。
+    """
     metrics = MetricsSchema()
     metrics.source_status.financials = "ok"
     metrics.source_status.valuation = "ok"
@@ -311,28 +323,34 @@ def _evaluate_one_to_result(
 
     try:
         # 1. overseas_revenue 数据
-        if code not in overseas_map:
-            metrics.source_status.overseas_parser = "missing"
-            return ScreeningResult.data_missing(
-                **common, data_missing_reason="overseas_revenue_missing",
-                metrics=metrics,
-            )
-
-        yearly = overseas_map[code]
-        latest_year = max(yearly.keys())
-        overseas_revenue = yearly[latest_year]
-        if overseas_revenue <= 0:
-            metrics.source_status.overseas_parser = "missing"
-            return ScreeningResult.data_missing(
-                **common, data_missing_reason="overseas_revenue_missing",
-                metrics=metrics,
-            )
-
+        # P2-2：季报场景下缺失不直接判 data_missing，仍允许走完财务/估值/质量
+        yearly: dict[int, float] = overseas_map.get(code, {})
+        overseas_revenue: Optional[float] = None
+        latest_year: Optional[int] = None
         overseas_yoy: Optional[float] = None
-        if latest_year - 1 in yearly:
-            prev = yearly[latest_year - 1]
-            if prev > 0:
-                overseas_yoy = (overseas_revenue - prev) / prev
+        overseas_ratio: Optional[float] = None
+        ratio_parse_warning: Optional[str] = None
+
+        if yearly:
+            latest_year = max(yearly.keys())
+            overseas_revenue = yearly[latest_year]
+
+        if not overseas_revenue or overseas_revenue <= 0:
+            if overseas_required:
+                metrics.source_status.overseas_parser = "missing"
+                return ScreeningResult.data_missing(
+                    **common, data_missing_reason="overseas_revenue_missing",
+                    metrics=metrics,
+                )
+            # 季报：标记缺失但继续
+            metrics.source_status.overseas_parser = "missing"
+            overseas_revenue = None
+        else:
+            # 计算 overseas_yoy（需要 prev year）
+            if latest_year is not None and (latest_year - 1) in yearly:
+                prev = yearly[latest_year - 1]
+                if prev > 0:
+                    overseas_yoy = (overseas_revenue - prev) / prev
 
         # 2. 拉营收（算海外占比）
         try:
@@ -352,10 +370,15 @@ def _evaluate_one_to_result(
             )
 
         fin_sorted = fin.sort_values("report_date") if "report_date" in fin.columns else fin
-        target_date = pd.Timestamp(year=latest_year, month=12, day=31)
-        annual_rows = fin_sorted[
-            pd.to_datetime(fin_sorted["report_date"]) == target_date
-        ]
+
+        # P2-2：季报场景无 latest_year（overseas 缺失）时，退到最新年报行
+        if latest_year is not None:
+            target_date = pd.Timestamp(year=latest_year, month=12, day=31)
+            annual_rows = fin_sorted[
+                pd.to_datetime(fin_sorted["report_date"]) == target_date
+            ]
+        else:
+            annual_rows = pd.DataFrame()
         if annual_rows.empty:
             fin_sorted_copy = fin_sorted.copy()
             fin_sorted_copy["report_date"] = pd.to_datetime(fin_sorted_copy["report_date"])
@@ -376,26 +399,30 @@ def _evaluate_one_to_result(
                 metrics=metrics,
             )
 
-        overseas_ratio = overseas_revenue / revenue
+        if overseas_revenue is not None and overseas_revenue > 0:
+            overseas_ratio = overseas_revenue / revenue
 
-        # P1.5-2：策略层 ratio 校验。当 best 候选 ratio 异常（>0.95 或 <0.05）时，
-        # 尝试从 candidates_json 挑出 ratio 更合理的候选。
-        ratio_parse_warning: Optional[str] = None
-        if overseas_ratio >= RATIO_PLAUSIBLE_MAX or overseas_ratio < RATIO_PLAUSIBLE_MIN:
-            meta_for_ratio = overseas_meta.get((code, latest_year), {})
-            cands = meta_for_ratio.get("candidates") or []
-            alt_revenue, alt_warn = _pick_plausible_candidate(
-                cands, float(revenue),
-                ratio_min=RATIO_PLAUSIBLE_MIN,
-                ratio_max=RATIO_PLAUSIBLE_MAX,
-            )
-            if alt_revenue is not None and alt_revenue > 0:
-                overseas_revenue = alt_revenue
-                overseas_ratio = overseas_revenue / revenue
-                ratio_parse_warning = alt_warn or "candidate_chose_from_json"
-            elif alt_warn:
-                # 候选都不合理 → 记录原因，保持原值，后续阈值检查会 reject
-                ratio_parse_warning = alt_warn
+            # P1.5-2：策略层 ratio 校验。当 best 候选 ratio 异常（>0.95 或 <0.05）时，
+            # 尝试从 candidates_json 挑出 ratio 更合理的候选。
+            if (
+                latest_year is not None
+                and (overseas_ratio >= RATIO_PLAUSIBLE_MAX
+                     or overseas_ratio < RATIO_PLAUSIBLE_MIN)
+            ):
+                meta_for_ratio = overseas_meta.get((code, latest_year), {})
+                cands = meta_for_ratio.get("candidates") or []
+                alt_revenue, alt_warn = _pick_plausible_candidate(
+                    cands, float(revenue),
+                    ratio_min=RATIO_PLAUSIBLE_MIN,
+                    ratio_max=RATIO_PLAUSIBLE_MAX,
+                )
+                if alt_revenue is not None and alt_revenue > 0:
+                    overseas_revenue = alt_revenue
+                    overseas_ratio = overseas_revenue / revenue
+                    ratio_parse_warning = alt_warn or "candidate_chose_from_json"
+                elif alt_warn:
+                    # 候选都不合理 → 记录原因，保持原值，后续阈值检查会 reject
+                    ratio_parse_warning = alt_warn
 
         # 3. PE 历史
         try:
@@ -425,16 +452,20 @@ def _evaluate_one_to_result(
         pe_stat = compute_pe_pb_percentile(pe_hist, "pe_ttm", years=5)
 
         # 4. 扩展条件
-        consensus = _check_consensus_growth(sina_source, store, code, latest_year, config)
-        cashflow = _check_cashflow_quality(sina_source, store, code, latest_year, latest_fin)
-        leverage = _check_leverage(sina_source, code, latest_year)
+        # P2-2：latest_year 可能为 None（季报+overseas 缺失），扩展条件优雅降级
+        consensus_year = latest_year if latest_year is not None else int(pd.Timestamp.now().year) - 1
+        consensus = _check_consensus_growth(sina_source, store, code, consensus_year, config)
+        cashflow = _check_cashflow_quality(sina_source, store, code, consensus_year, latest_fin)
+        leverage = _check_leverage(sina_source, code, consensus_year)
 
         # 5. 填充 metrics
         metrics.valuation.pe_ttm = float(pe_ttm)
         metrics.valuation.pe_pct_5y = pe_stat["percentile"]
-        metrics.overseas.overseas_ratio = float(overseas_ratio)
+        if overseas_ratio is not None:
+            metrics.overseas.overseas_ratio = float(overseas_ratio)
         metrics.overseas.overseas_yoy = float(overseas_yoy) if overseas_yoy is not None else None
-        metrics.overseas.overseas_revenue_yi = float(overseas_revenue) / 1e8
+        if overseas_revenue is not None:
+            metrics.overseas.overseas_revenue_yi = float(overseas_revenue) / 1e8
         metrics.overseas.total_revenue_yi = float(revenue) / 1e8
         if cashflow.get("ocf_to_profit") is not None:
             metrics.quality.ocf_to_net_profit = float(cashflow["ocf_to_profit"])
@@ -499,38 +530,39 @@ def _evaluate_one_to_result(
                 **common, watch_reason="parse_warning", metrics=metrics
             )
 
-        # 6.5 P1-3 + P1.5-2：合并 parse_warning
-        # 来源：(a) overseas_revenue 表 db_parse_warning（多年交叉/低置信度）
-        #       (b) P1.5-2 ratio 校验产生的 ratio_parse_warning
-        meta = overseas_meta.get((code, latest_year), {})
-        db_parse_warning = meta.get("parse_warning")
-        confidence = meta.get("confidence")
-        combined_warning_parts = [
-            p for p in (db_parse_warning, ratio_parse_warning) if p
-        ]
-        combined_warning = "; ".join(combined_warning_parts) or None
-        if combined_warning:
-            metrics.overseas.parse_warning = combined_warning
-            return ScreeningResult.watch(
-                **common, watch_reason="parse_warning", metrics=metrics
-            )
-        if confidence == "low":
-            metrics.overseas.parse_warning = (
-                f"low_confidence_parser:region={yearly and max(yearly.keys())}"
-            )
-            return ScreeningResult.watch(
-                **common, watch_reason="data_warning", metrics=metrics
-            )
+        # 6.5 P1-3 + P1.5-2：合并 parse_warning（仅在有 overseas 数据时）
+        if latest_year is not None:
+            meta = overseas_meta.get((code, latest_year), {})
+            db_parse_warning = meta.get("parse_warning")
+            confidence = meta.get("confidence")
+            combined_warning_parts = [
+                p for p in (db_parse_warning, ratio_parse_warning) if p
+            ]
+            combined_warning = "; ".join(combined_warning_parts) or None
+            if combined_warning:
+                metrics.overseas.parse_warning = combined_warning
+                return ScreeningResult.watch(
+                    **common, watch_reason="parse_warning", metrics=metrics
+                )
+            if confidence == "low":
+                metrics.overseas.parse_warning = (
+                    f"low_confidence_parser:region={latest_year}"
+                )
+                return ScreeningResult.watch(
+                    **common, watch_reason="data_warning", metrics=metrics
+                )
 
         # 7. 阈值检查
-        if overseas_ratio < config.overseas_ratio_min:
-            return ScreeningResult.rejected(
-                **common, reject_reason="overseas_ratio_too_low", metrics=metrics
-            )
-        if overseas_ratio >= config.overseas_ratio_max:
-            return ScreeningResult.rejected(
-                **common, reject_reason="overseas_ratio_abnormal", metrics=metrics
-            )
+        # P2-2：季报场景跳过 overseas_ratio 硬过滤（数据可能 stale 或缺失）
+        if overseas_required and overseas_ratio is not None:
+            if overseas_ratio < config.overseas_ratio_min:
+                return ScreeningResult.rejected(
+                    **common, reject_reason="overseas_ratio_too_low", metrics=metrics
+                )
+            if overseas_ratio >= config.overseas_ratio_max:
+                return ScreeningResult.rejected(
+                    **common, reject_reason="overseas_ratio_abnormal", metrics=metrics
+                )
         if float(pe_ttm) > config.pe_ttm_max:
             return ScreeningResult.rejected(
                 **common, reject_reason="pe_ttm_too_high", metrics=metrics
@@ -555,6 +587,8 @@ def _evaluate_one_to_result(
                 **common, watch_reason="consensus_missing", metrics=metrics
             )
 
+        # P2-2：统一用 all_thresholds_met；季报场景下 source_status.overseas_parser
+        # 和 metrics.overseas.overseas_ratio 已经足够说明上下文（ratio 可能为 None）。
         if config.require_consensus_growth:
             metrics.source_status.consensus = "ok"
         return ScreeningResult.hit(
