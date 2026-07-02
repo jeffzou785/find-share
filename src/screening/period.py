@@ -32,6 +32,20 @@ SUFFIX_TO_KIND: dict[str, str] = {
 # 反向映射（report_type → period suffix），用于生成 period
 KIND_TO_SUFFIX: dict[str, str] = {v: k for k, v in SUFFIX_TO_KIND.items()}
 
+_NEXT_SUFFIX: dict[str, tuple[int, str]] = {
+    "A": (1, "Q1"),
+    "Q1": (0, "H"),
+    "H": (0, "Q3"),
+    "Q3": (0, "A"),
+}
+
+_REPORT_MONTH_DAY: dict[str, tuple[int, int]] = {
+    "A": (12, 31),
+    "Q1": (3, 31),
+    "H": (6, 30),
+    "Q3": (9, 30),
+}
+
 
 @dataclass(frozen=True)
 class PeriodInfo:
@@ -99,3 +113,26 @@ def require_overseas_filter(period: str) -> bool:
     if info is None:
         return True
     return info.has_overseas_notes
+
+
+def next_period(period: str) -> Optional[str]:
+    """返回下一报告期。
+
+    例：2025A → 2026Q1，2026Q1 → 2026H，2026H → 2026Q3，2026Q3 → 2026A。
+    """
+    info = parse_period(period)
+    if info is None:
+        return None
+    year_delta, suffix = _NEXT_SUFFIX[info.suffix]
+    return f"{info.year + year_delta}{suffix}"
+
+
+def period_report_date(period: str):
+    """返回 period 对应的报告日 Timestamp；无法解析返回 None。"""
+    import pandas as pd
+
+    info = parse_period(period)
+    if info is None:
+        return None
+    month, day = _REPORT_MONTH_DAY[info.suffix]
+    return pd.Timestamp(year=info.year, month=month, day=day)

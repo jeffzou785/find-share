@@ -82,6 +82,20 @@ class TestSchemaMigration:
         }
         assert expected <= cols
 
+    def test_financial_validation_results_columns(self, store):
+        rows = store.conn.execute(
+            "PRAGMA table_info(financial_validation_results)"
+        ).fetchall()
+        cols = {r[1] for r in rows}
+        expected = {
+            "run_id", "code", "name", "strategy", "candidate_status",
+            "source_period", "validation_period", "validation_report_date",
+            "verdict", "revenue_yoy", "net_profit_yoy",
+            "deducted_net_profit", "gross_margin", "ocf_per_share",
+            "checks_json", "error", "created_at",
+        }
+        assert expected <= cols
+
     def test_disclosures_period_to_report_type_backfill(self, store):
         """老库 disclosures 历史行应从 period 推导 report_type。"""
         df = pd.DataFrame(
@@ -363,3 +377,39 @@ class TestBacktestResults:
         loaded = store.load_backtest_results("r1")
         assert len(loaded) == 1
         assert loaded.iloc[0]["relative_return"] == pytest.approx(0.15)
+
+
+class TestFinancialValidationResults:
+    def test_save_and_load_financial_validation_results(self, store):
+        df = pd.DataFrame([
+            {
+                "run_id": "r1",
+                "code": "600031",
+                "name": "三一重工",
+                "strategy": "overseas",
+                "candidate_status": "hit",
+                "source_period": "2025A",
+                "validation_period": "2026Q1",
+                "validation_report_date": "2026-03-31",
+                "verdict": "confirmed",
+                "revenue_yoy": 0.12,
+                "net_profit_yoy": 0.08,
+                "deducted_net_profit": 100.0,
+                "gross_margin": 0.3,
+                "ocf_per_share": 0.5,
+                "checks_json": "{}",
+            }
+        ])
+        assert store.save_financial_validation_results(df) == 1
+        loaded = store.load_financial_validation_results("r1")
+        assert len(loaded) == 1
+        row = loaded.iloc[0]
+        assert row["code"] == "600031"
+        assert row["validation_period"] == "2026Q1"
+        assert row["revenue_yoy"] == pytest.approx(0.12)
+
+        df.loc[0, "verdict"] = "mixed"
+        assert store.save_financial_validation_results(df) == 1
+        loaded = store.load_financial_validation_results("r1")
+        assert len(loaded) == 1
+        assert loaded.iloc[0]["verdict"] == "mixed"

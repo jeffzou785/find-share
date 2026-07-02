@@ -9,6 +9,8 @@ from src.screening.period import (
     KIND_Q1,
     KIND_Q3,
     PeriodInfo,
+    next_period,
+    period_report_date,
     parse_period,
     require_overseas_filter,
 )
@@ -81,3 +83,19 @@ class TestRequireOverseasFilter:
         """无法识别的 period 保守返回 True（沿用旧行为）。"""
         assert require_overseas_filter("") is True
         assert require_overseas_filter("garbage") is True
+
+
+class TestNextPeriod:
+    def test_next_period_sequence(self):
+        assert next_period("2025A") == "2026Q1"
+        assert next_period("2026Q1") == "2026H"
+        assert next_period("2026H") == "2026Q3"
+        assert next_period("2026Q3") == "2026A"
+        assert next_period("bad") is None
+
+    def test_period_report_date(self):
+        assert str(period_report_date("2026Q1").date()) == "2026-03-31"
+        assert str(period_report_date("2026H").date()) == "2026-06-30"
+        assert str(period_report_date("2026Q3").date()) == "2026-09-30"
+        assert str(period_report_date("2026A").date()) == "2026-12-31"
+        assert period_report_date("bad") is None

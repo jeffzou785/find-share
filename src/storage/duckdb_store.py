@@ -14,6 +14,7 @@
 - overseas_revenue: 年报附注提取的海外收入（Phase 0 输出）
 - pharma_vbp_events: 医药集采/中标结构化事件
 - backtest_results: screen_run 后 20/60/120 日前瞻收益验证
+- financial_validation_results: screen_run 后下一期财务兑现验证
 """
 from __future__ import annotations
 
@@ -244,6 +245,27 @@ CREATE TABLE IF NOT EXISTS backtest_results (
     error VARCHAR,
     created_at TIMESTAMP,
     PRIMARY KEY (run_id, code, strategy, window_days)
+);
+
+CREATE TABLE IF NOT EXISTS financial_validation_results (
+    run_id VARCHAR,
+    code VARCHAR,
+    name VARCHAR,
+    strategy VARCHAR,
+    candidate_status VARCHAR,
+    source_period VARCHAR,
+    validation_period VARCHAR,
+    validation_report_date DATE,
+    verdict VARCHAR,
+    revenue_yoy DOUBLE,
+    net_profit_yoy DOUBLE,
+    deducted_net_profit DOUBLE,
+    gross_margin DOUBLE,
+    ocf_per_share DOUBLE,
+    checks_json VARCHAR,
+    error VARCHAR,
+    created_at TIMESTAMP,
+    PRIMARY KEY (run_id, code, strategy, validation_period)
 );
 """
 
@@ -877,4 +899,41 @@ class DuckDBStore:
             sql += " AND code = ?"
             params.append(str(code).zfill(6))
         sql += " ORDER BY run_id, code, strategy, window_days"
+        return self.conn.execute(sql, params).df()
+
+    # === financial_validation_results（P2：下一期财务验证） ===
+    def save_financial_validation_results(self, df: pd.DataFrame) -> int:
+        if df.empty:
+            return 0
+        df = df.copy()
+        if "validation_report_date" in df.columns:
+            df["validation_report_date"] = (
+                pd.to_datetime(df["validation_report_date"], errors="coerce").dt.date
+            )
+        df["created_at"] = pd.Timestamp.now()
+        cols = [
+            "run_id", "code", "name", "strategy", "candidate_status",
+            "source_period", "validation_period", "validation_report_date",
+            "verdict", "revenue_yoy", "net_profit_yoy", "deducted_net_profit",
+            "gross_margin", "ocf_per_share", "checks_json", "error",
+            "created_at",
+        ]
+        df = df[[c for c in cols if c in df.columns]]
+        self.upert_dataframe("financial_validation_results", df)
+        return len(df)
+
+    def load_financial_validation_results(
+        self,
+        run_id: str | None = None,
+        code: str | None = None,
+    ) -> pd.DataFrame:
+        sql = "SELECT * FROM financial_validation_results WHERE 1=1"
+        params: list = []
+        if run_id:
+            sql += " AND run_id = ?"
+            params.append(run_id)
+        if code:
+            sql += " AND code = ?"
+            params.append(str(code).zfill(6))
+        sql += " ORDER BY run_id, code, strategy, validation_period"
         return self.conn.execute(sql, params).df()

@@ -30,7 +30,7 @@ A 股选股框架：基于公开数据的量化初筛 + 研报深度分析的两
 | `DataSource` Protocol | 抽象层，未来切 Tushare 时业务代码零修改 | `base.py` |
 
 ### 存储层 `src/storage/`
-DuckDB 15 张表：
+DuckDB 16 张表：
 - 静态数据：`stocks` / `industry_first` / `industry_second` / `stock_industry`
 - 估值/财务：`pe_pb_history` / `financials` / `financials_full`（新浪三表长格式）
 - 研报：`broker_reports`（东财研报列表）/ `eps_forecast_consensus`（同花顺一致预期）
@@ -38,6 +38,7 @@ DuckDB 15 张表：
 - 其他：`overseas_revenue`（年报附注境外收入）/ `disclosures`（披露日历）
 - **审计（P0）**：`screen_runs`（运行级）/ `candidate_scores`（个股级）
 - **验证（P2）**：`backtest_results`（run 后 20/60/120 交易日前瞻收益）
+- **兑现（P2）**：`financial_validation_results`（run 后下一期财务兑现验证）
 
 全部带 upsert，重复入库保留 `pdf_path` / `ingested_to_rag` / 人工标注状态。
 
@@ -70,6 +71,7 @@ jieba 分词 + TF-IDF + SQLite 实现的轻量 RAG（不依赖 chromadb，秒级
 - **P2-4 一致性校验**（`consistency.py`）：研报 EPS 预测 vs 财报实际 EPS（偏差>25% → warn）+ 财报海外收入 vs 研报标题关键词匹配；批量预加载避免 N+1
 - **P0/P2 审计修复**：`p0-audit` 采用严格口径，研报必须有本地 PDF，ground truth 必须通过合法标签/原因校验，VBP 事件必须带可追溯证据；`--strategy all` 的 `config_json` 保存所有子策略配置
 - **P2-6 前瞻收益回测**（`backtest.py` + `scripts/backtest_forward_returns.py`）：对 `hit/watch` 候选计算 20/60/120 交易日绝对收益和可选基准相对收益，结果入 `backtest_results`
+- **P2-8 下一期财务验证**（`financial_validation.py` + `scripts/validate_next_financials.py`）：对 `hit/watch` 候选推导下一报告期，验证收入/净利同比是否继续兑现，结果入 `financial_validation_results`
 
 ---
 
@@ -127,6 +129,10 @@ python3 -m src.pipeline.cli monitor --before-run <run_id_old> --after-run <run_i
 # P2 验证：前瞻收益回测（只使用本地 pe_pb_history，不联网）
 python3 -m src.pipeline.cli backtest --period 2025A --strategy all
 python3 -m src.pipeline.cli backtest --run-id <run_id> --benchmark-code 000300
+
+# P2 兑现：下一期财务验证（只使用本地 financials，不联网）
+python3 -m src.pipeline.cli financial-validate --period 2025A --strategy all
+python3 -m src.pipeline.cli financial-validate --run-id <run_id> --validation-period 2026Q1
 
 # P0 闭环：审计、人工标签、策略二医药结构化数据
 python3 -m src.pipeline.cli p0-audit
@@ -249,6 +255,7 @@ ls data/exports/runs/                                  # 每次 run 一个子目
 cat data/exports/runs/<run_id>/report.md               # Markdown 总报告
 cat data/exports/runs/<run_id>/coverage.md             # 字段覆盖率 / 原因码 / 数据源状态
 cat data/exports/backtests/<run_id>/summary.md         # 20/60/120 日前瞻收益回测
+cat data/exports/financial_validations/<run_id>/summary.md  # 下一期财务兑现验证
 ```
 
 ### 找机械行业出海标的（完整示例）
@@ -324,6 +331,7 @@ python3 scripts/research_rag_cli.py search "宇通客车 海外订单" --stock 6
 | **P2 对抗式 review 修复**（2026-07-02）| 修 `0.0` PE/PB 分位被 `or` 误判缺失；`--strategy all` 保存多子策略配置；coverage 报告写入 `screen_runs.coverage_json` 和 run 输出目录 |
 | **P2-6 前瞻收益回测**（2026-07-02）| 新增 `backtest` CLI：按 screen_run 的 `hit/watch` 候选计算 20/60/120 交易日收益，支持可选基准相对收益，落 `backtest_results` 和 `data/exports/backtests/<run_id>/` |
 | **P2-7 RAG 去重与章节标题**（2026-07-02）| `ResearchRAG` 新增 `content_hash` / `text_hash` / `section_title`，同内容不同文件名不重复入库；搜索结果输出章节标题，为后续 claim 抽取保留上下文 |
+| **P2-8 下一期财务验证**（2026-07-02）| 新增 `financial-validate` CLI：按 screen_run 的 `hit/watch` 候选推导下一报告期，验证收入/净利同比是否兑现，落 `financial_validation_results` 和 `data/exports/financial_validations/<run_id>/` |
 
 ### 已知问题
 
@@ -409,7 +417,7 @@ find-share/
 │   │   ├── annual_report_parser.py  # 年报境外收入解析
 │   │   ├── industry_mapping.py      # 申万↔新浪行业映射
 │   │   └── _retry.py                # @akshare_call 装饰器
-│   ├── storage/                     # DuckDB 持久化（15 张表）
+│   ├── storage/                     # DuckDB 持久化（16 张表）
 │   ├── indicators/                  # PE/PB 分位（3y/5y/10y）+ TTM 增速
 │   ├── strategies/                  # 策略一/三 + 过滤器 + 反转判定
 │   ├── knowledge/                   # 研报 RAG（jieba+TF-IDF+SQLite+同义词扩展）
