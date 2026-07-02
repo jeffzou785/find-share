@@ -13,6 +13,7 @@
 - disclosures     : 财报披露日历
 - overseas_revenue: 年报附注提取的海外收入（Phase 0 输出）
 - pharma_vbp_events: 医药集采/中标结构化事件
+- backtest_results: screen_run 后 20/60/120 日前瞻收益验证
 """
 from __future__ import annotations
 
@@ -222,6 +223,28 @@ CREATE TABLE IF NOT EXISTS candidate_scores (
 
 CREATE INDEX IF NOT EXISTS idx_candidate_scores_lookup
     ON candidate_scores (strategy, period, status);
+
+CREATE TABLE IF NOT EXISTS backtest_results (
+    run_id VARCHAR,
+    code VARCHAR,
+    name VARCHAR,
+    strategy VARCHAR,
+    period VARCHAR,
+    window_days INTEGER,
+    anchor_date DATE,
+    start_date DATE,
+    end_date DATE,
+    start_close DOUBLE,
+    end_close DOUBLE,
+    absolute_return DOUBLE,
+    benchmark_code VARCHAR,
+    benchmark_return DOUBLE,
+    relative_return DOUBLE,
+    status VARCHAR,
+    error VARCHAR,
+    created_at TIMESTAMP,
+    PRIMARY KEY (run_id, code, strategy, window_days)
+);
 """
 
 
@@ -820,3 +843,38 @@ class DuckDBStore:
         if statuses and not df.empty:
             df = df[df["status"].isin(statuses)]
         return df
+
+    # === backtest_results（P2：前瞻收益验证） ===
+    def save_backtest_results(self, df: pd.DataFrame) -> int:
+        if df.empty:
+            return 0
+        df = df.copy()
+        for col in ("anchor_date", "start_date", "end_date"):
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors="coerce").dt.date
+        df["created_at"] = pd.Timestamp.now()
+        cols = [
+            "run_id", "code", "name", "strategy", "period", "window_days",
+            "anchor_date", "start_date", "end_date", "start_close", "end_close",
+            "absolute_return", "benchmark_code", "benchmark_return",
+            "relative_return", "status", "error", "created_at",
+        ]
+        df = df[[c for c in cols if c in df.columns]]
+        self.upert_dataframe("backtest_results", df)
+        return len(df)
+
+    def load_backtest_results(
+        self,
+        run_id: str | None = None,
+        code: str | None = None,
+    ) -> pd.DataFrame:
+        sql = "SELECT * FROM backtest_results WHERE 1=1"
+        params: list = []
+        if run_id:
+            sql += " AND run_id = ?"
+            params.append(run_id)
+        if code:
+            sql += " AND code = ?"
+            params.append(str(code).zfill(6))
+        sql += " ORDER BY run_id, code, strategy, window_days"
+        return self.conn.execute(sql, params).df()

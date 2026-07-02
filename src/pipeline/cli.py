@@ -13,6 +13,7 @@
 - pdf           下载定期报告 PDF（download_annual_reports.py）
 - rag           研报 RAG 检索（research_rag_cli.py）
 - baseline      数据源对照（data_source_baseline.py）
+- backtest      前瞻收益回测（backtest_forward_returns.py）
 - p0-audit      P0 闭环状态审计
 - label-export  导出待人工标注清单
 - label-import  回写人工标签
@@ -51,6 +52,7 @@ SUBCOMMAND_SCRIPTS: dict[str, str] = {
     "rag": str(SCRIPTS_DIR / "research_rag_cli.py"),
     "baseline": str(SCRIPTS_DIR / "data_source_baseline.py"),
     "baseline-diff": str(SCRIPTS_DIR / "baseline_diff.py"),
+    "backtest": str(SCRIPTS_DIR / "backtest_forward_returns.py"),
     "import-overseas": str(SCRIPTS_DIR / "import_overseas_revenue.py"),
     "p0-audit": str(SCRIPTS_DIR / "p0_audit.py"),
     "label-export": str(SCRIPTS_DIR / "export_labeling_queue.py"),

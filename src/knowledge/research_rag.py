@@ -17,12 +17,13 @@
 """
 from __future__ import annotations
 
+import hashlib
 import math
 import pickle
 import re
 import sqlite3
 import warnings
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -111,6 +112,7 @@ class ResearchChunk:
     report_date: str
     page: int
     text: str
+    section_title: str = ""
 
 
 @dataclass
@@ -123,6 +125,83 @@ class SearchResult:
     report_date: str
     page: int
     source_pdf: str
+    section_title: str = ""
+
+
+_HEADING_PATTERNS = [
+    re.compile(r"^\s*(第[一二三四五六七八九十]+[章节])\s*[:：、]?\s*(.{2,40})\s*$"),
+    re.compile(r"^\s*([一二三四五六七八九十]+[、.．])\s*(.{2,40})\s*$"),
+    re.compile(r"^\s*（([一二三四五六七八九十]+)）\s*(.{2,40})\s*$"),
+    re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2}){1,2})\s*(.{2,40})\s*$"),
+    re.compile(r"^\s*(\d{1,2})[、.．]\s*(.{2,40})\s*$"),
+    re.compile(r"^\s*(\d{1,2}(?:\.\d{1,2}){0,2})\s+(.{2,40})\s*$"),
+]
+
+
+def _normalize_for_hash(text: str) -> str:
+    """内容去重用的规范化：去空白、统一大小写。"""
+    return re.sub(r"\s+", "", text or "").lower()
+
+
+def _hash_text(text: str) -> str:
+    return hashlib.sha256(_normalize_for_hash(text).encode("utf-8")).hexdigest()
+
+
+def _content_hash(chunks: list[ResearchChunk]) -> str:
+    joined = "\n".join(c.text for c in chunks)
+    return _hash_text(joined)
+
+
+def _clean_heading(title: str) -> str:
+    title = re.sub(r"\s+", " ", title).strip()
+    title = re.sub(r"[。；;：:,.，]+$", "", title).strip()
+    return title[:80]
+
+
+def infer_section_title(text: str) -> str:
+    """从文本片段中推断章节标题。
+
+    只做保守规则，避免把普通正文误判成章节。
+    """
+    for raw_line in (text or "").splitlines()[:12]:
+        line = raw_line.strip()
+        if not (2 <= len(line) <= 60):
+            continue
+        for pat in _HEADING_PATTERNS:
+            m = pat.match(line)
+            if m:
+                return _clean_heading(m.group(2) if len(m.groups()) >= 2 else line)
+        if line in {"投资建议", "盈利预测", "风险提示", "公司概况", "核心观点"}:
+            return line
+    return ""
+
+
+def _extract_section_headings(text: str) -> list[tuple[int, str]]:
+    headings: list[tuple[int, str]] = []
+    cursor = 0
+    for raw_line in text.splitlines():
+        line_start = cursor
+        line = raw_line.strip()
+        title = infer_section_title(line)
+        if title:
+            headings.append((line_start, title))
+        cursor += len(raw_line) + 1
+    return headings
+
+
+def _section_for_span(
+    page_text: str,
+    start: int,
+    end: int,
+    headings: list[tuple[int, str]],
+) -> str:
+    for pos, title in headings:
+        if start <= pos <= min(end, start + 300):
+            return title
+    before = [title for pos, title in headings if pos <= start]
+    if before:
+        return before[-1]
+    return infer_section_title(page_text[start:end])
 
 
 def _tokenize(text: str) -> list[str]:
@@ -158,7 +237,10 @@ def parse_pdf_to_chunks(pdf_path: str | Path) -> list[ResearchChunk]:
                 text = (page.extract_text() or "").strip()
                 if len(text) < 100:
                     continue
-                for chunk_text in _split_text(text, CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS):
+                headings = _extract_section_headings(text)
+                for chunk_text, start, end in _split_text_with_offsets(
+                    text, CHUNK_SIZE_CHARS, CHUNK_OVERLAP_CHARS
+                ):
                     if len(chunk_text.strip()) < 50:
                         continue
                     chunks.append(
@@ -169,6 +251,7 @@ def parse_pdf_to_chunks(pdf_path: str | Path) -> list[ResearchChunk]:
                             report_date=date,
                             page=page_num,
                             text=chunk_text,
+                            section_title=_section_for_span(text, start, end, headings),
                         )
                     )
     except Exception as e:
@@ -177,12 +260,17 @@ def parse_pdf_to_chunks(pdf_path: str | Path) -> list[ResearchChunk]:
 
 
 def _split_text(text: str, size: int, overlap: int) -> list[str]:
+    return [chunk for chunk, _, _ in _split_text_with_offsets(text, size, overlap)]
+
+
+def _split_text_with_offsets(text: str, size: int, overlap: int) -> list[tuple[str, int, int]]:
     if len(text) <= size:
-        return [text]
+        return [(text, 0, len(text))]
     parts = []
     start = 0
     while start < len(text):
-        parts.append(text[start : start + size])
+        end = min(len(text), start + size)
+        parts.append((text[start:end], start, end))
         start += size - overlap
     return parts
 
@@ -218,16 +306,72 @@ class ResearchRAG:
                     broker TEXT,
                     report_date TEXT,
                     page INTEGER,
+                    section_title TEXT,
+                    content_hash TEXT,
+                    text_hash TEXT,
                     text TEXT,
                     tokens TEXT
                 )
                 """
             )
+            self._add_column_if_missing(conn, "section_title", "TEXT")
+            self._add_column_if_missing(conn, "content_hash", "TEXT")
+            self._add_column_if_missing(conn, "text_hash", "TEXT")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_stock ON chunks(stock_code)"
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_source ON chunks(source_pdf)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_content_hash ON chunks(content_hash)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_text_hash ON chunks(text_hash)"
+            )
+            self._backfill_hash_columns(conn)
+
+    @staticmethod
+    def _add_column_if_missing(conn, column: str, ddl_type: str) -> None:
+        rows = conn.execute("PRAGMA table_info(chunks)").fetchall()
+        existing = {r[1] for r in rows}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE chunks ADD COLUMN {column} {ddl_type}")
+
+    @staticmethod
+    def _backfill_hash_columns(conn) -> None:
+        rows = conn.execute(
+            "SELECT id, source_pdf, text, content_hash, text_hash FROM chunks "
+            "WHERE text IS NOT NULL"
+        ).fetchall()
+        if not rows:
+            return
+
+        by_source: dict[str, list[tuple[int, str]]] = {}
+        for chunk_id, source_pdf, text, content_hash, text_hash in rows:
+            if not text_hash:
+                conn.execute(
+                    "UPDATE chunks SET text_hash = ? WHERE id = ?",
+                    [_hash_text(text), chunk_id],
+                )
+            if source_pdf:
+                by_source.setdefault(source_pdf, []).append((chunk_id, text))
+
+        for source_pdf, source_rows in by_source.items():
+            existing = conn.execute(
+                "SELECT content_hash FROM chunks "
+                "WHERE source_pdf = ? AND content_hash IS NOT NULL "
+                "AND content_hash != '' LIMIT 1",
+                [source_pdf],
+            ).fetchone()
+            content_hash = (
+                existing[0] if existing
+                else _hash_text("\n".join(text for _, text in source_rows))
+            )
+            conn.execute(
+                "UPDATE chunks SET content_hash = ? "
+                "WHERE source_pdf = ? AND (content_hash IS NULL OR content_hash = '')",
+                [content_hash, source_pdf],
             )
 
     @property
@@ -244,6 +388,14 @@ class ResearchRAG:
             rows = conn.execute("SELECT DISTINCT source_pdf FROM chunks").fetchall()
         return {r[0] for r in rows if r[0]}
 
+    def _get_indexed_content_hashes(self) -> set[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT content_hash FROM chunks "
+                "WHERE content_hash IS NOT NULL AND content_hash != ''"
+            ).fetchall()
+        return {r[0] for r in rows if r[0]}
+
     def ingest_pdf(
         self,
         pdf_path: Path | str,
@@ -253,7 +405,7 @@ class ResearchRAG:
 
         metadata 可显式传入 stock_code / stock_name / broker / report_date，
         不传则从文件名解析（parse_pdf_to_chunks 默认逻辑）。
-        若该 PDF 已索引（按文件名去重），返回 0。
+        若该 PDF 已索引（按文件名或内容 hash 去重），返回 0。
         """
         pdf_path = Path(pdf_path)
         source_key = pdf_path.name
@@ -262,6 +414,9 @@ class ResearchRAG:
 
         chunks = parse_pdf_to_chunks(pdf_path)
         if not chunks:
+            return 0
+        content_hash = _content_hash(chunks)
+        if content_hash in self._get_indexed_content_hashes():
             return 0
 
         # metadata 覆盖文件名解析
@@ -276,9 +431,10 @@ class ResearchRAG:
                 if metadata.get("report_date"):
                     c.report_date = str(metadata["report_date"])
 
-        self._add_chunks(source_key, chunks)
-        self._build_index()
-        return len(chunks)
+        added = self._add_chunks(source_key, chunks, content_hash=content_hash)
+        if added > 0:
+            self._build_index()
+        return added
 
     def index_directory(self, pdf_dir: Path | str, force_refresh: bool = False) -> int:
         """索引整个研报目录。返回新增 chunk 数。"""
@@ -294,6 +450,7 @@ class ResearchRAG:
                     f.unlink()
 
         existing = self._get_indexed_pdfs() if not force_refresh else set()
+        content_hashes = self._get_indexed_content_hashes() if not force_refresh else set()
         total = 0
 
         from tqdm import tqdm
@@ -304,35 +461,59 @@ class ResearchRAG:
             chunks = parse_pdf_to_chunks(pdf_path)
             if not chunks:
                 continue
-            self._add_chunks(pdf_path.name, chunks)
-            total += len(chunks)
+            content_hash = _content_hash(chunks)
+            if content_hash in content_hashes:
+                continue
+            added = self._add_chunks(pdf_path.name, chunks, content_hash=content_hash)
+            if added:
+                content_hashes.add(content_hash)
+                total += added
 
         if total > 0:
             self._build_index()
 
         return total
 
-    def _add_chunks(self, source_pdf: str, chunks: list[ResearchChunk]) -> None:
+    def _add_chunks(
+        self,
+        source_pdf: str,
+        chunks: list[ResearchChunk],
+        content_hash: str | None = None,
+    ) -> int:
+        if not chunks:
+            return 0
+        content_hash = content_hash or _content_hash(chunks)
+        added = 0
         with sqlite3.connect(self.db_path) as conn:
+            seen_text_hashes: set[str] = set()
             for c in chunks:
+                text_hash = _hash_text(c.text)
+                if text_hash in seen_text_hashes:
+                    continue
                 tokens = " ".join(_tokenize(c.text))
                 conn.execute(
                     """INSERT INTO chunks
-                       (source_pdf, stock_code, stock_name, broker, report_date, page, text, tokens)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                       (source_pdf, stock_code, stock_name, broker, report_date,
+                        page, section_title, content_hash, text_hash, text, tokens)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         source_pdf, c.stock_code, c.stock_name, c.broker,
-                        c.report_date, c.page, c.text, tokens,
+                        c.report_date, c.page, c.section_title,
+                        content_hash, text_hash, c.text, tokens,
                     ),
                 )
-        self._chunk_count += len(chunks)
+                seen_text_hashes.add(text_hash)
+                added += 1
+        self._chunk_count += added
+        return added
 
     def _load_all_chunks(self) -> list[tuple[int, dict]]:
         """加载所有 chunks。返回 [(id, {text, tokens, metadata})]。"""
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
                 """SELECT id, source_pdf, stock_code, stock_name, broker,
-                          report_date, page, text, tokens FROM chunks"""
+                          report_date, page, section_title, content_hash,
+                          text_hash, text, tokens FROM chunks"""
             ).fetchall()
         return [
             (
@@ -344,8 +525,11 @@ class ResearchRAG:
                     "broker": r[4],
                     "report_date": r[5],
                     "page": r[6],
-                    "text": r[7],
-                    "tokens": r[8].split() if r[8] else [],
+                    "section_title": r[7] or "",
+                    "content_hash": r[8],
+                    "text_hash": r[9],
+                    "text": r[10],
+                    "tokens": r[11].split() if r[11] else [],
                 },
             )
             for r in rows
@@ -477,6 +661,7 @@ class ResearchRAG:
                     report_date=c["report_date"],
                     page=c["page"],
                     source_pdf=c["source_pdf"],
+                    section_title=c.get("section_title") or "",
                 )
             )
         return out
@@ -493,9 +678,14 @@ class ResearchRAG:
             pdf_rows = conn.execute(
                 "SELECT COUNT(DISTINCT source_pdf) FROM chunks"
             ).fetchone()
+            content_rows = conn.execute(
+                "SELECT COUNT(DISTINCT content_hash) FROM chunks "
+                "WHERE content_hash IS NOT NULL AND content_hash != ''"
+            ).fetchone()
         return {
-            "total_chunks": self._chunk_count,
+            "total_chunks": self.count,
             "total_pdfs": pdf_rows[0] if pdf_rows else 0,
+            "total_content_hashes": content_rows[0] if content_rows else 0,
             "by_stock": [(r[0], r[1]) for r in stock_rows],
             "by_broker": [(r[0], r[1]) for r in broker_rows],
         }

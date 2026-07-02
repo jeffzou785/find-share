@@ -61,6 +61,8 @@ def cmd_search(args) -> int:
             f"--- [{i}] 相似度 {r.score:.3f} | {r.stock_code} {r.stock_name} "
             f"| {r.broker} | {r.report_date} | P{r.page} ---"
         )
+        if r.section_title:
+            print(f"章节: {r.section_title}")
         text = r.text.replace("\n", " ").strip()
         print(text[:500] + ("..." if len(text) > 500 else ""))
         print()
@@ -74,6 +76,7 @@ def cmd_info(args) -> int:
     print(f"  持久化目录: {rag.persist_dir}")
     print(f"  总 chunks: {stats['total_chunks']}")
     print(f"  PDF 数: {stats['total_pdfs']}")
+    print(f"  内容 hash 数: {stats.get('total_content_hashes', 0)}")
     if stats["by_stock"]:
         print(f"\n按股票分布（前 20）:")
         for code, cnt in stats["by_stock"]:

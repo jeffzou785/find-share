@@ -1,4 +1,11 @@
 """筛选层公共 API。"""
+from .backtest import (
+    DEFAULT_WINDOWS,
+    compute_forward_returns,
+    compute_forward_returns_batch,
+    normalize_windows,
+    summarize_backtest,
+)
 from .consistency import (
     ConsistencyObservation,
     ConsistencyResult,
@@ -70,4 +77,6 @@ __all__ = [
     "ConsistencyResult", "ConsistencyObservation",
     "check_consistency", "check_consistency_batch",
     "check_eps_consistency", "check_overseas_consistency",
+    "DEFAULT_WINDOWS", "compute_forward_returns",
+    "compute_forward_returns_batch", "normalize_windows", "summarize_backtest",
 ]

@@ -71,6 +71,17 @@ class TestSchemaMigration:
         }
         assert expected <= cols
 
+    def test_backtest_results_columns(self, store):
+        rows = store.conn.execute("PRAGMA table_info(backtest_results)").fetchall()
+        cols = {r[1] for r in rows}
+        expected = {
+            "run_id", "code", "name", "strategy", "period", "window_days",
+            "anchor_date", "start_date", "end_date", "start_close", "end_close",
+            "absolute_return", "benchmark_code", "benchmark_return",
+            "relative_return", "status", "error", "created_at",
+        }
+        assert expected <= cols
+
     def test_disclosures_period_to_report_type_backfill(self, store):
         """老库 disclosures 历史行应从 period 推导 report_type。"""
         df = pd.DataFrame(
@@ -315,3 +326,40 @@ class TestPharmaVbpEvents:
         row = loaded.iloc[0]
         assert row["product_name"] == "药品A"
         assert row["vbp_status"] == "won"
+
+
+class TestBacktestResults:
+    def test_save_and_load_backtest_results(self, store):
+        df = pd.DataFrame([
+            {
+                "run_id": "r1",
+                "code": "600276",
+                "name": "恒瑞医药",
+                "strategy": "pharma",
+                "period": "2025A",
+                "window_days": 20,
+                "anchor_date": "2026-01-01",
+                "start_date": "2026-01-02",
+                "end_date": "2026-02-01",
+                "start_close": 10.0,
+                "end_close": 12.0,
+                "absolute_return": 0.2,
+                "benchmark_code": "000300",
+                "benchmark_return": 0.1,
+                "relative_return": 0.1,
+                "status": "ok",
+            }
+        ])
+        assert store.save_backtest_results(df) == 1
+        loaded = store.load_backtest_results("r1")
+        assert len(loaded) == 1
+        row = loaded.iloc[0]
+        assert row["code"] == "600276"
+        assert row["window_days"] == 20
+        assert row["relative_return"] == pytest.approx(0.1)
+
+        df.loc[0, "relative_return"] = 0.15
+        assert store.save_backtest_results(df) == 1
+        loaded = store.load_backtest_results("r1")
+        assert len(loaded) == 1
+        assert loaded.iloc[0]["relative_return"] == pytest.approx(0.15)
