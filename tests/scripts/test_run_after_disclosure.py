@@ -11,13 +11,17 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.run_after_disclosure import (
+    _build_config_schema,
+    _build_coverage_report,
     _filter_candidates_by_codes,
     _gen_run_id,
     _load_skip_codes_for_resume,
     _merge_fingerprints,
     _period_to_report_type,
     _resolve_codes,
+    _serialize_run_config,
 )
+from src.screening import MetricsSchema, ScreeningResult
 from src.storage import DuckDBStore
 
 
@@ -153,6 +157,61 @@ class TestMergeFingerprints:
 
     def test_single_strategy_no_pipe(self):
         assert _merge_fingerprints({"consumer": "abc"}) == "consumer:abc"
+
+
+class TestConfigSchema:
+    def test_scoring_enabled_by_default_args(self):
+        class Args:
+            non_em_max_workers = 2
+            single_request_timeout = 30
+            retry_times = 2
+            resume = False
+            enable_scoring = True
+
+        cfg = _build_config_schema("overseas", "2025A", Args)
+        assert cfg.score_weights is not None
+        assert "growth" in cfg.score_weights
+
+    def test_serialize_all_run_config_keeps_sub_strategy_configs(self):
+        class Args:
+            non_em_max_workers = 2
+            single_request_timeout = 30
+            retry_times = 2
+            resume = False
+            enable_scoring = True
+
+        cfgs = {
+            "consumer": _build_config_schema("consumer", "2025A", Args),
+            "overseas": _build_config_schema("overseas", "2025A", Args),
+        }
+        payload = _serialize_run_config("all", cfgs)
+        assert '"strategy": "all"' in payload
+        assert '"consumer"' in payload
+        assert '"overseas"' in payload
+        assert '"score_weights"' in payload
+
+
+class TestCoverageReport:
+    def test_build_coverage_report_counts_fields_and_reasons(self):
+        metrics = MetricsSchema()
+        metrics.valuation.pe_ttm = 12.0
+        metrics.growth.revenue_yoy = 0.2
+        metrics.source_status.financials = "ok"
+        metrics.source_status.valuation = "missing"
+        metrics.score.final_score = 0.72
+        metrics.score.coverage_ratio = 0.5
+        result = ScreeningResult.watch(
+            run_id="r1", code="600031", strategy="overseas", period="2025A",
+            watch_reason="parse_warning", metrics=metrics,
+        )
+        coverage = _build_coverage_report([result])
+        assert coverage["total"] == 1
+        assert coverage["status_counts"] == {"watch": 1}
+        assert coverage["reason_counts"]["watch_reason"]["parse_warning"] == 1
+        assert coverage["metric_coverage"]["valuation.pe_ttm"]["coverage_ratio"] == 1.0
+        assert coverage["metric_coverage"]["quality.debt_ratio"]["coverage_ratio"] == 0.0
+        assert coverage["source_status_counts"]["valuation"] == {"missing": 1}
+        assert coverage["score"]["avg_coverage_ratio"] == 0.5
 
 
 class TestLoadSkipCodesForResume:

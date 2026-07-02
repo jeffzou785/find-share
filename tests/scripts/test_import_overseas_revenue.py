@@ -28,11 +28,19 @@ _spec.loader.exec_module(_mod)
 
 _cross_year_check = _mod._cross_year_check
 _load_history_from_store = _mod._load_history_from_store
+_log = _mod._log
 _record_to_candidate_dict = _mod._record_to_candidate_dict
 CROSS_YEAR_FACTOR = _mod.CROSS_YEAR_FACTOR
 
 from src.collectors.annual_report_parser import OverseasRevenueRecord
 from src.storage import DuckDBStore
+
+
+class TestLogging:
+    def test_log_uses_logger(self, caplog):
+        caplog.set_level("INFO")
+        _log("hello")
+        assert "hello" in caplog.text
 
 
 class TestCrossYearCheck:

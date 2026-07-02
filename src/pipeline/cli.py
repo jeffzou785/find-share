@@ -1,6 +1,6 @@
 """P2-0：统一 CLI 入口。
 
-把现有 11 个独立脚本封装为统一命令，新用户只需记住 `python -m src.pipeline.cli`。
+把现有脚本封装为统一命令，新用户只需记住 `python -m src.pipeline.cli`。
 旧脚本继续保留，CLI 只是 thin wrapper（通过 subprocess 调用），不复制业务逻辑。
 
 子命令：
@@ -13,6 +13,11 @@
 - pdf           下载定期报告 PDF（download_annual_reports.py）
 - rag           研报 RAG 检索（research_rag_cli.py）
 - baseline      数据源对照（data_source_baseline.py）
+- p0-audit      P0 闭环状态审计
+- label-export  导出待人工标注清单
+- label-import  回写人工标签
+- pharma-vbp    导入医药集采结构化事件
+- pharma-gt     校验策略二 ground truth
 
 用法示例：
     python3 -m src.pipeline.cli bootstrap
@@ -47,6 +52,11 @@ SUBCOMMAND_SCRIPTS: dict[str, str] = {
     "baseline": str(SCRIPTS_DIR / "data_source_baseline.py"),
     "baseline-diff": str(SCRIPTS_DIR / "baseline_diff.py"),
     "import-overseas": str(SCRIPTS_DIR / "import_overseas_revenue.py"),
+    "p0-audit": str(SCRIPTS_DIR / "p0_audit.py"),
+    "label-export": str(SCRIPTS_DIR / "export_labeling_queue.py"),
+    "label-import": str(SCRIPTS_DIR / "import_candidate_labels.py"),
+    "pharma-vbp": str(SCRIPTS_DIR / "import_pharma_vbp_events.py"),
+    "pharma-gt": str(SCRIPTS_DIR / "validate_pharma_ground_truth.py"),
     # P2-3 监控
     "monitor": str(SCRIPTS_DIR / "monitor_changes.py"),
 }
@@ -68,7 +78,7 @@ def _run_script(script_path: str, extra_args: list[str]) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="python -m src.pipeline.cli",
-        description="find-share 统一 CLI（封装 13 个独立脚本）",
+        description="find-share 统一 CLI（封装核心流水线子命令）",
         epilog="各子命令的详细参数请用 `python -m src.pipeline.cli <cmd> --help` 查看",
     )
     parser.add_argument(

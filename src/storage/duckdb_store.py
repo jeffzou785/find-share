@@ -12,6 +12,7 @@
 - eps_forecast_consensus: 全市场一致预期 EPS 汇总（同花顺）
 - disclosures     : 财报披露日历
 - overseas_revenue: 年报附注提取的海外收入（Phase 0 输出）
+- pharma_vbp_events: 医药集采/中标结构化事件
 """
 from __future__ import annotations
 
@@ -161,6 +162,24 @@ CREATE TABLE IF NOT EXISTS eps_forecast_consensus (
     PRIMARY KEY (code, forecast_year)
 );
 
+CREATE TABLE IF NOT EXISTS pharma_vbp_events (
+    code VARCHAR,
+    name VARCHAR,
+    product_name VARCHAR,
+    vbp_batch VARCHAR,
+    vbp_status VARCHAR,
+    tender_date DATE,
+    province VARCHAR,
+    price_before DOUBLE,
+    price_after DOUBLE,
+    volume_commitment VARCHAR,
+    source VARCHAR,
+    source_url VARCHAR,
+    evidence_text VARCHAR,
+    updated_at TIMESTAMP,
+    PRIMARY KEY (code, product_name, vbp_batch)
+);
+
 CREATE TABLE IF NOT EXISTS screen_runs (
     run_id VARCHAR PRIMARY KEY,
     strategy VARCHAR,
@@ -176,6 +195,7 @@ CREATE TABLE IF NOT EXISTS screen_runs (
     error_count INTEGER,
     config_json VARCHAR,
     config_fingerprint VARCHAR,
+    coverage_json VARCHAR,
     status VARCHAR,
     error VARCHAR
 );
@@ -189,8 +209,13 @@ CREATE TABLE IF NOT EXISTS candidate_scores (
     status VARCHAR,
     hit_reason VARCHAR,
     reject_reason VARCHAR,
+    watch_reason VARCHAR,
     data_missing_reason VARCHAR,
+    error VARCHAR,
     metrics_json VARCHAR,
+    human_label VARCHAR,
+    label_reason VARCHAR,
+    labeled_at TIMESTAMP,
     created_at TIMESTAMP,
     PRIMARY KEY (run_id, code, strategy)
 );
@@ -237,6 +262,15 @@ class DuckDBStore:
         self._add_column_if_missing(
             "overseas_revenue", "confidence", "VARCHAR"
         )
+        # 审计扩列：覆盖率、watch/error 原因和人工标签。
+        self._add_column_if_missing("screen_runs", "coverage_json", "VARCHAR")
+        self._add_column_if_missing("candidate_scores", "watch_reason", "VARCHAR")
+        self._add_column_if_missing("candidate_scores", "error", "VARCHAR")
+        self._add_column_if_missing("candidate_scores", "human_label", "VARCHAR")
+        self._add_column_if_missing("candidate_scores", "label_reason", "VARCHAR")
+        self._add_column_if_missing("candidate_scores", "labeled_at", "TIMESTAMP")
+        self._add_column_if_missing("pharma_vbp_events", "source_url", "VARCHAR")
+        self._add_column_if_missing("pharma_vbp_events", "evidence_text", "VARCHAR")
         # 老库的 disclosures 历史行：从 period 推导 report_type（best effort）
         self.conn.execute(
             "UPDATE disclosures SET report_type = CASE "
@@ -493,6 +527,33 @@ class DuckDBStore:
             [code],
         ).df()
 
+    # === pharma_vbp_events（策略二A 医药集采结构化事件） ===
+    def save_pharma_vbp_events(self, df: pd.DataFrame) -> int:
+        if df.empty:
+            return 0
+        df = df.copy()
+        if "tender_date" in df.columns:
+            df["tender_date"] = pd.to_datetime(df["tender_date"], errors="coerce").dt.date
+        df["updated_at"] = pd.Timestamp.now()
+        cols = [
+            "code", "name", "product_name", "vbp_batch", "vbp_status",
+            "tender_date", "province", "price_before", "price_after",
+            "volume_commitment", "source", "source_url", "evidence_text",
+            "updated_at",
+        ]
+        df = df[[c for c in cols if c in df.columns]]
+        self.upert_dataframe("pharma_vbp_events", df)
+        return len(df)
+
+    def load_pharma_vbp_events(self, code: str | None = None) -> pd.DataFrame:
+        sql = "SELECT * FROM pharma_vbp_events"
+        params: list = []
+        if code:
+            sql += " WHERE code = ?"
+            params.append(code)
+        sql += " ORDER BY tender_date DESC NULLS LAST, code"
+        return self.conn.execute(sql, params).df()
+
     # === overseas_revenue ===
     def save_overseas_revenue(self, rows: Iterable[dict]) -> int:
         df = pd.DataFrame(list(rows))
@@ -553,14 +614,18 @@ class DuckDBStore:
         status: str,
         counts: dict[str, int] | None = None,
         error: str | None = None,
+        coverage_json: str | dict | None = None,
     ) -> None:
         """status: success / partial_success / failed。counts 给具体分类计数。"""
         counts = counts or {}
+        if isinstance(coverage_json, dict):
+            coverage_json = json.dumps(coverage_json, ensure_ascii=False, default=str)
         self.conn.execute(
             "UPDATE screen_runs SET "
             " finished_at = CURRENT_TIMESTAMP, "
             " hit_count = ?, watch_count = ?, rejected_count = ?, "
             " data_missing_count = ?, error_count = ?, "
+            " coverage_json = COALESCE(?, coverage_json), "
             " status = ?, error = ? "
             "WHERE run_id = ?",
             [
@@ -569,6 +634,7 @@ class DuckDBStore:
                 int(counts.get("rejected", 0)),
                 int(counts.get("data_missing", 0)),
                 int(counts.get("error", 0)),
+                coverage_json,
                 status,
                 error,
                 run_id,
@@ -628,13 +694,18 @@ class DuckDBStore:
         """单只股票的评估结果入库。
 
         row 必填：run_id, code, strategy, status, created_at。
-        可选：name, period, hit_reason, reject_reason, data_missing_reason, metrics_json。
+        可选：name, period, hit_reason, reject_reason, watch_reason,
+        data_missing_reason, error, metrics_json, human_label, label_reason, labeled_at。
         """
         self.save_candidate_scores([row])
 
     def save_candidate_scores(self, rows: Iterable[dict]) -> int:
         """批量入库。显式 DELETE + INSERT 避免 INSERT OR REPLACE 在
         覆盖 status 列的二级索引上的 DuckDB 1.4 部分更新异常。
+
+        注意：human_label / label_reason / labeled_at 是人工审计字段。
+        普通筛选结果未显式传入这些字段时，保留 DB 中已有标签，避免重跑
+        screen 把人工标注清空。
         """
         rows = list(rows)
         if not rows:
@@ -644,10 +715,36 @@ class DuckDBStore:
                 r["created_at"] = pd.Timestamp.now()
         cols = [
             "run_id", "code", "name", "strategy", "period", "status",
-            "hit_reason", "reject_reason", "data_missing_reason",
-            "metrics_json", "created_at",
+            "hit_reason", "reject_reason", "watch_reason",
+            "data_missing_reason", "error", "metrics_json",
+            "human_label", "label_reason", "labeled_at", "created_at",
         ]
         df = pd.DataFrame([{c: r.get(c) for c in cols} for r in rows])
+        label_cols = ["human_label", "label_reason", "labeled_at"]
+        key_cols = ["run_id", "code", "strategy"]
+        self.conn.register("_tmp_cs_keys", df[key_cols].drop_duplicates())
+        try:
+            existing_labels = self.conn.execute(
+                "SELECT cs.run_id, cs.code, cs.strategy, "
+                "cs.human_label AS _existing_human_label, "
+                "cs.label_reason AS _existing_label_reason, "
+                "cs.labeled_at AS _existing_labeled_at "
+                "FROM candidate_scores cs "
+                "JOIN _tmp_cs_keys k "
+                "ON cs.run_id = k.run_id AND cs.code = k.code "
+                "AND cs.strategy = k.strategy"
+            ).df()
+        finally:
+            self.conn.unregister("_tmp_cs_keys")
+        if not existing_labels.empty:
+            df = df.merge(existing_labels, on=key_cols, how="left")
+            for col in label_cols:
+                existing_col = f"_existing_{col}"
+                df[col] = df[col].where(df[col].notna(), df[existing_col])
+            df = df.drop(
+                columns=[f"_existing_{col}" for col in label_cols],
+                errors="ignore",
+            )
         self.conn.register("_tmp_cs", df)
         try:
             self.conn.execute(
@@ -663,6 +760,32 @@ class DuckDBStore:
         finally:
             self.conn.unregister("_tmp_cs")
         return len(df)
+
+    def update_candidate_label(
+        self,
+        *,
+        run_id: str,
+        code: str,
+        strategy: str,
+        human_label: str,
+        label_reason: str | None = None,
+        labeled_at: pd.Timestamp | None = None,
+    ) -> bool:
+        """更新人工标签。返回是否找到对应候选行。"""
+        labeled_at = labeled_at or pd.Timestamp.now()
+        exists = self.conn.execute(
+            "SELECT COUNT(*) FROM candidate_scores "
+            "WHERE run_id = ? AND code = ? AND strategy = ?",
+            [run_id, code, strategy],
+        ).fetchone()[0]
+        if not exists:
+            return False
+        self.conn.execute(
+            "UPDATE candidate_scores SET human_label = ?, label_reason = ?, "
+            "labeled_at = ? WHERE run_id = ? AND code = ? AND strategy = ?",
+            [human_label, label_reason, labeled_at, run_id, code, strategy],
+        )
+        return True
 
     def load_candidate_scores(
         self,

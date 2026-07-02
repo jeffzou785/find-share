@@ -3,7 +3,7 @@
 设计约束（参见 IMPROVEMENTS P2-1）：
 - 权重写入 screen_runs.config_json（ConfigSchema.score_weights）。
 - 评分只用于排序和 watch 分层，不覆盖硬风控。
-- 子分缺失时按 0.5 中性填充（避免拉低 / 拉高），并在权重重新归一化时排除缺失项。
+- 子分缺失时按 0.5 中性填充（避免数据缺失推高分数），并输出 coverage_ratio。
 
 公式：
     final_score =
@@ -91,6 +91,13 @@ def _avg(values: list[Optional[float]]) -> Optional[float]:
     return sum(valid) / len(valid)
 
 
+def _first_not_none(*values: Optional[float]) -> Optional[float]:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
 def compute_growth_score(metrics: MetricsSchema, strategy: str) -> Optional[float]:
     """增长子分（0-1）。"""
     parts: list[Optional[float]] = []
@@ -118,10 +125,10 @@ def compute_valuation_score(metrics: MetricsSchema) -> Optional[float]:
     """估影子分（0-1）。越低估越好。"""
     parts: list[Optional[float]] = []
 
-    pe_pct = (
-        metrics.valuation.pe_pct_5y
-        or metrics.valuation.pe_pct_3y
-        or metrics.valuation.pe_pct_10y
+    pe_pct = _first_not_none(
+        metrics.valuation.pe_pct_5y,
+        metrics.valuation.pe_pct_3y,
+        metrics.valuation.pe_pct_10y,
     )
     if pe_pct is not None:
         # PE 分位是百分数（0-100），先 /100 转小数
@@ -129,10 +136,10 @@ def compute_valuation_score(metrics: MetricsSchema) -> Optional[float]:
         # 分位 [0, 100] → [1, 0]
         parts.append(_norm_low_better(pct, 0.0, 1.0))
 
-    pb_pct = (
-        metrics.valuation.pb_pct_5y
-        or metrics.valuation.pb_pct_3y
-        or metrics.valuation.pb_pct_10y
+    pb_pct = _first_not_none(
+        metrics.valuation.pb_pct_5y,
+        metrics.valuation.pb_pct_3y,
+        metrics.valuation.pb_pct_10y,
     )
     if pb_pct is not None:
         pct = pb_pct / 100.0 if pb_pct > 1 else pb_pct
@@ -213,12 +220,12 @@ def compute_neglect_score(metrics: MetricsSchema) -> Optional[float]:
 
 def compute_risk_penalty(metrics: MetricsSchema) -> Optional[float]:
     """风险扣分（0-1）。parse_warning + 低现金流 + 高负债累加，封顶 1.0。"""
-    if metrics.overseas.parse_warning:
-        # 海外收入解析有 warning：固定扣 0.3
-        return _clamp(0.3)
     debt = metrics.quality.debt_ratio
     ocf = metrics.quality.ocf_to_net_profit
     penalty = 0.0
+    if metrics.overseas.parse_warning:
+        # 海外收入解析有 warning：固定扣 0.3，但不提前返回。
+        penalty += 0.3
     if debt is not None and debt > 0.7:
         penalty += 0.2
     if ocf is not None and ocf < 0.3:
@@ -250,7 +257,7 @@ def compute_score(
     neglect = compute_neglect_score(metrics)
     risk = compute_risk_penalty(metrics)
 
-    # 加权求和：缺失项的权重重新归一化到剩余项
+    # 加权求和：缺失项按 0.5 中性填充，不重新归一化；同时记录覆盖率。
     subscores = {
         "growth": (growth, w.get("growth", 0.0)),
         "valuation": (valuation, w.get("valuation", 0.0)),
@@ -258,14 +265,21 @@ def compute_score(
         "catalyst": (catalyst, w.get("catalyst", 0.0)),
         "neglect": (neglect, w.get("neglect", 0.0)),
     }
-    total_w = 0.0
+    total_w = sum(weight for _, weight in subscores.values() if weight > 0)
+    observed_w = 0.0
     weighted_sum = 0.0
     for score_val, weight_val in subscores.values():
-        if score_val is None or weight_val <= 0:
+        if weight_val <= 0:
             continue
-        weighted_sum += score_val * weight_val
-        total_w += weight_val
-    base = weighted_sum / total_w if total_w > 0 else None
+        if score_val is None:
+            weighted_sum += 0.5 * weight_val
+        else:
+            weighted_sum += score_val * weight_val
+            observed_w += weight_val
+
+    coverage_ratio = observed_w / total_w if total_w > 0 else None
+    # 全部缺失时继续返回 None，避免空 metrics 因中性填充产生可排序分数。
+    base = weighted_sum / total_w if total_w > 0 and observed_w > 0 else None
     final_score = (
         base - (risk or 0.0) * DEFAULT_RISK_PENALTY_WEIGHT
         if base is not None else None
@@ -281,5 +295,6 @@ def compute_score(
         neglect_score=neglect,
         risk_penalty=risk,
         final_score=final_score,
+        coverage_ratio=coverage_ratio,
         weights_used=dict(w),
     )

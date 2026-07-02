@@ -196,6 +196,16 @@ class TestScreeningResultToRow:
         parsed = json.loads(row["metrics_json"])
         assert parsed["valuation"]["pe_ttm"] == 25.0
         assert parsed["overseas"]["parse_warning"] == "unit_ambiguous"
+        assert row["watch_reason"] == "parse_warning"
+
+    def test_to_row_includes_error_message(self):
+        r = ScreeningResult.from_exception(
+            run_id="r1", code="X", strategy="overseas", period="2025A",
+            error="ValueError: bad pdf",
+        )
+        row = r.to_row()
+        assert row["status"] == "error"
+        assert row["error"] == "ValueError: bad pdf"
 
     def test_to_row_can_be_saved_to_db(self, tmp_path):
         from src.storage import DuckDBStore

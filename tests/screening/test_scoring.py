@@ -78,6 +78,15 @@ class TestSubscores:
         assert s is not None
         assert s > 0.7  # 低估应该高分
 
+    def test_valuation_score_keeps_zero_percentile(self):
+        m = MetricsSchema()
+        m.valuation.pe_pct_5y = 0.0
+        m.valuation.pe_pct_3y = 100.0
+        m.valuation.pb_pct_5y = 0.0
+        m.valuation.pb_pct_3y = 100.0
+        s = compute_valuation_score(m)
+        assert s == pytest.approx(1.0)
+
     def test_valuation_score_high_pe_low_score(self):
         m = MetricsSchema()
         m.valuation.pe_pct_5y = 90.0
@@ -129,6 +138,13 @@ class TestSubscores:
         m.overseas.parse_warning = "unit_ambiguous"
         assert compute_risk_penalty(m) == 0.3
 
+    def test_risk_penalty_accumulates_parse_warning_quality_risks(self):
+        m = MetricsSchema()
+        m.overseas.parse_warning = "unit_ambiguous"
+        m.quality.debt_ratio = 0.8
+        m.quality.ocf_to_net_profit = 0.1
+        assert compute_risk_penalty(m) == pytest.approx(0.7)
+
     def test_risk_penalty_high_debt_low_ocf(self):
         m = MetricsSchema()
         m.quality.debt_ratio = 0.8
@@ -172,6 +188,7 @@ class TestComputeScore:
         assert s.growth_score is not None
         assert s.valuation_score is not None
         assert s.neglect_score is not None
+        assert s.coverage_ratio == pytest.approx(1.0)
         assert s.weights_used == DEFAULT_WEIGHTS_OVERSEAS
 
     def test_consumer_full_metrics_produces_score(self):
@@ -185,6 +202,7 @@ class TestComputeScore:
         s = compute_score(m, "consumer")
         assert s.final_score is not None
         # neglect 权重为 0，consumer 评分应不依赖 neglect
+        assert s.coverage_ratio == pytest.approx(1.0)
         assert s.weights_used == DEFAULT_WEIGHTS_CONSUMER
 
     def test_empty_metrics_returns_none_final(self):
@@ -192,6 +210,18 @@ class TestComputeScore:
         s = compute_score(m, "consumer")
         # 所有子分 None → final_score None
         assert s.final_score is None
+        assert s.coverage_ratio == pytest.approx(0.0)
+
+    def test_missing_subscore_uses_neutral_fill_and_reports_coverage(self):
+        m = MetricsSchema()
+        m.growth.deducted_profit_yoy_ttm = 2.0
+        custom = {"growth": 0.5, "valuation": 0.5, "quality": 0.0,
+                  "catalyst": 0.0, "neglect": 0.0}
+        s = compute_score(m, "consumer", weights=custom)
+        assert s.growth_score == pytest.approx(1.0)
+        assert s.valuation_score is None
+        assert s.coverage_ratio == pytest.approx(0.5)
+        assert s.final_score == pytest.approx(0.75)
 
     def test_custom_weights_override(self):
         m = MetricsSchema()

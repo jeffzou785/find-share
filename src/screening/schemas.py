@@ -93,6 +93,7 @@ class ScoreMetrics:
     final_score = w1*growth + w2*valuation + w3*quality + w4*catalyst
                   + w5*neglect - risk_penalty
     权重来自 ConfigSchema.score_weights（默认按策略不同）。
+    coverage_ratio 表示参与正权重评分项中有真实子分的权重占比。
     """
     growth_score: Optional[float] = None
     valuation_score: Optional[float] = None
@@ -101,6 +102,7 @@ class ScoreMetrics:
     neglect_score: Optional[float] = None
     risk_penalty: Optional[float] = None
     final_score: Optional[float] = None
+    coverage_ratio: Optional[float] = None
     weights_used: Optional[dict[str, float]] = None
 
 

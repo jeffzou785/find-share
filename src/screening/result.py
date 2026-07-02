@@ -71,7 +71,9 @@ class ScreeningResult:
             "status": self.status.value,
             "hit_reason": self.hit_reason,
             "reject_reason": self.reject_reason,
+            "watch_reason": self.watch_reason,
             "data_missing_reason": self.data_missing_reason,
+            "error": self.error,
             "metrics_json": self.metrics.to_json(),
             "created_at": self.created_at,
         }

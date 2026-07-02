@@ -32,7 +32,8 @@ class TestCliRouting:
         # 所有 subcommand 都列出
         for cmd in ("bootstrap", "refresh", "screen", "strategy1",
                     "strategy3", "reports", "pdf", "rag", "baseline",
-                    "monitor"):
+                    "monitor", "p0-audit", "label-export", "label-import",
+                    "pharma-vbp", "pharma-gt"):
             assert cmd in out
 
     def test_unknown_command_errors(self):

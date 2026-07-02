@@ -45,7 +45,7 @@ class TestSchemaMigration:
             "started_at", "finished_at",
             "input_count", "hit_count", "watch_count",
             "rejected_count", "data_missing_count", "error_count",
-            "config_json", "config_fingerprint", "status", "error",
+            "config_json", "config_fingerprint", "coverage_json", "status", "error",
         }
         assert expected <= cols
 
@@ -54,8 +54,20 @@ class TestSchemaMigration:
         cols = {r[1] for r in rows}
         expected = {
             "run_id", "code", "name", "strategy", "period", "status",
-            "hit_reason", "reject_reason", "data_missing_reason",
-            "metrics_json", "created_at",
+            "hit_reason", "reject_reason", "watch_reason",
+            "data_missing_reason", "error", "metrics_json",
+            "human_label", "label_reason", "labeled_at", "created_at",
+        }
+        assert expected <= cols
+
+    def test_pharma_vbp_events_columns(self, store):
+        rows = store.conn.execute("PRAGMA table_info(pharma_vbp_events)").fetchall()
+        cols = {r[1] for r in rows}
+        expected = {
+            "code", "name", "product_name", "vbp_batch", "vbp_status",
+            "tender_date", "province", "price_before", "price_after",
+            "volume_commitment", "source", "source_url", "evidence_text",
+            "updated_at",
         }
         assert expected <= cols
 
@@ -93,6 +105,7 @@ class TestScreenRun:
         store.finish_screen_run(
             "run1", status="success",
             counts={"hit": 3, "watch": 2, "rejected": 4, "data_missing": 1, "error": 0},
+            coverage_json={"total": 10, "score": {"avg_coverage_ratio": 0.8}},
         )
         run = store.load_screen_run("run1").iloc[0]
         assert run["status"] == "success"
@@ -100,6 +113,7 @@ class TestScreenRun:
         assert run["watch_count"] == 2
         assert run["rejected_count"] == 4
         assert run["data_missing_count"] == 1
+        assert json.loads(run["coverage_json"])["score"]["avg_coverage_ratio"] == 0.8
         assert run["finished_at"] is not None
 
     def test_list_runs_orders_by_started_desc(self, store):
@@ -170,6 +184,59 @@ class TestCandidateScores:
         statuses = set(all_rows["status"])
         assert statuses == {"hit", "rejected", "data_missing"}
 
+    def test_save_watch_error_and_human_label_fields(self, store):
+        store.create_screen_run("r1", "overseas", "2025A", "annual", "{}", "f")
+        rows = [
+            {"run_id": "r1", "code": "A", "strategy": "overseas", "period": "2025A",
+             "status": "watch", "watch_reason": "parse_warning",
+             "human_label": "watch", "label_reason": "unit ambiguous"},
+            {"run_id": "r1", "code": "B", "strategy": "overseas", "period": "2025A",
+             "status": "error", "error": "ValueError: bad pdf"},
+        ]
+        store.save_candidate_scores(rows)
+        df = store.load_candidate_scores("r1")
+        row_a = df[df["code"] == "A"].iloc[0]
+        row_b = df[df["code"] == "B"].iloc[0]
+        assert row_a["watch_reason"] == "parse_warning"
+        assert row_a["human_label"] == "watch"
+        assert row_a["label_reason"] == "unit ambiguous"
+        assert row_b["error"] == "ValueError: bad pdf"
+
+    def test_save_candidate_scores_preserves_existing_human_label(self, store):
+        store.create_screen_run("r1", "overseas", "2025A", "annual", "{}", "f")
+        store.save_candidate_scores([
+            {"run_id": "r1", "code": "A", "strategy": "overseas", "period": "2025A",
+             "status": "hit", "human_label": "hit", "label_reason": "baseline"},
+        ])
+        store.save_candidate_scores([
+            {"run_id": "r1", "code": "A", "strategy": "overseas", "period": "2025A",
+             "status": "watch", "watch_reason": "near_threshold"},
+        ])
+        row = store.load_candidate_scores("r1").iloc[0]
+        assert row["status"] == "watch"
+        assert row["watch_reason"] == "near_threshold"
+        assert row["human_label"] == "hit"
+        assert row["label_reason"] == "baseline"
+
+    def test_update_candidate_label(self, store):
+        store.create_screen_run("r1", "overseas", "2025A", "annual", "{}", "f")
+        store.save_candidate_scores([
+            {"run_id": "r1", "code": "A", "strategy": "overseas", "period": "2025A",
+             "status": "hit"},
+        ])
+        assert store.update_candidate_label(
+            run_id="r1", code="A", strategy="overseas",
+            human_label="false_positive", label_reason="one-off gain",
+        ) is True
+        row = store.load_candidate_scores("r1").iloc[0]
+        assert row["human_label"] == "false_positive"
+        assert row["label_reason"] == "one-off gain"
+        assert row["labeled_at"] is not None
+        assert store.update_candidate_label(
+            run_id="r1", code="missing", strategy="overseas",
+            human_label="watch",
+        ) is False
+
     def test_filter_by_status(self, store):
         store.create_screen_run("r1", "overseas", "2025A", "annual", "{}", "f")
         rows = [
@@ -221,3 +288,30 @@ class TestCandidateScores:
         df = store.load_latest_candidate_scores("overseas", "2025A")
         assert len(df) == 1
         assert df.iloc[0]["code"] == "NEW"
+
+
+class TestPharmaVbpEvents:
+    def test_save_and_load_pharma_vbp_events(self, store):
+        df = pd.DataFrame([
+            {
+                "code": "600276",
+                "name": "恒瑞医药",
+                "product_name": "药品A",
+                "vbp_batch": "第八批",
+                "vbp_status": "won",
+                "tender_date": "2024-01-01",
+                "province": "全国",
+                "price_before": 10.0,
+                "price_after": 5.0,
+                "volume_commitment": "约定采购量",
+                "source": "manual",
+                "source_url": "https://example.com",
+                "evidence_text": "中选",
+            }
+        ])
+        assert store.save_pharma_vbp_events(df) == 1
+        loaded = store.load_pharma_vbp_events("600276")
+        assert len(loaded) == 1
+        row = loaded.iloc[0]
+        assert row["product_name"] == "药品A"
+        assert row["vbp_status"] == "won"

@@ -19,6 +19,7 @@
 输出：data/exports/runs/{run_id}/
   - consumer_2025A.csv / overseas_2025A.csv
   - report.md
+  - coverage.json / coverage.md
   - rejected_reasons.csv
   - data_missing.csv
   - errors.csv
@@ -26,11 +27,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import secrets
 import sys
 import time
+from collections import Counter
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -58,9 +61,11 @@ from src.strategies.overseas_champion import (
     StrategyConfig as OverseasConfig,
     evaluate_overseas_full,
 )
+from src.utils.logging import configure_logging
 
 
 STRATEGIES = ("consumer", "overseas", "all")
+logger = configure_logging(__name__)
 
 
 def _gen_run_id(period: str) -> str:
@@ -85,14 +90,14 @@ def _print_disclosures_coverage(store: DuckDBStore, period: str) -> tuple[int, i
     except Exception:
         return 0, 0, 0.0
     if df.empty:
-        print(f"  ⚠ disclosures 表 period={period} 为空")
+        logger.warning(f"  ⚠ disclosures 表 period={period} 为空")
         return 0, 0, 0.0
     rows = len(df)
     actual_non_null = (
         df["actual_date"].notna().sum() if "actual_date" in df.columns else 0
     )
     coverage = (actual_non_null / rows) * 100 if rows else 0.0
-    print(
+    logger.info(
         f"  disclosures period={period} rows={rows} "
         f"actual_date_non_null={actual_non_null} coverage={coverage:.1f}%"
     )
@@ -111,14 +116,14 @@ def _resolve_codes(
     if args.from_disclosures:
         rows, _, coverage = _print_disclosures_coverage(store, period)
         if rows == 0:
-            print("  ⚠ disclosures 为空，回退到候选池（可改用 --codes 手动指定）")
+            logger.warning("  ⚠ disclosures 为空，回退到候选池（可改用 --codes 手动指定）")
         else:
             disc = store.load_disclosures(period)
             # 优先选 actual_date 不为空的（已披露）
             if "actual_date" in disc.columns:
                 disc = disc[disc["actual_date"].notna()]
             if disc.empty:
-                print("  ⚠ disclosures 中无已披露记录，回退到候选池")
+                logger.warning("  ⚠ disclosures 中无已披露记录，回退到候选池")
             else:
                 codes = disc["code"].astype(str).str.zfill(6).tolist()
                 if args.limit:
@@ -178,7 +183,7 @@ def _apply_scoring(
             )
         except Exception as e:
             # 评分异常不应影响主流程，但要可见
-            print(f"⚠ scoring failed for {r.code}: {type(e).__name__}: {e}")
+            logger.warning(f"⚠ scoring failed for {r.code}: {type(e).__name__}: {e}")
 
 
 def _filter_candidates_by_codes(
@@ -236,6 +241,164 @@ def _save_results_to_store(
     return counts
 
 
+def _get_metric_value(metrics: Any, path: str) -> Any:
+    value = metrics
+    for part in path.split("."):
+        value = getattr(value, part, None)
+        if value is None:
+            return None
+    return value
+
+
+def _counter_dict(counter: Counter) -> dict[str, int]:
+    return {str(k): int(v) for k, v in counter.items() if k is not None}
+
+
+def _build_coverage_report(results: list[ScreeningResult]) -> dict[str, Any]:
+    """生成字段覆盖率、原因码和数据源状态摘要。"""
+    total = len(results)
+    status_counts = Counter(r.status.value for r in results)
+    strategy_status_counts: dict[str, Counter] = {}
+    reason_counts = {
+        "hit_reason": Counter(),
+        "watch_reason": Counter(),
+        "reject_reason": Counter(),
+        "data_missing_reason": Counter(),
+        "error": Counter(),
+    }
+    source_status_counts: dict[str, Counter] = {
+        "financials": Counter(),
+        "valuation": Counter(),
+        "annual_pdf": Counter(),
+        "overseas_parser": Counter(),
+        "consensus": Counter(),
+    }
+
+    for r in results:
+        strategy_status_counts.setdefault(r.strategy, Counter())[r.status.value] += 1
+        for attr, counter in reason_counts.items():
+            value = getattr(r, attr, None)
+            if value:
+                counter[value] += 1
+        if r.metrics and r.metrics.source_status:
+            ss = r.metrics.source_status
+            for field, counter in source_status_counts.items():
+                counter[getattr(ss, field, None) or "unknown"] += 1
+            for key, value in ss.extra.items():
+                source_status_counts.setdefault(f"extra.{key}", Counter())[value] += 1
+
+    metric_fields = [
+        "valuation.pe_ttm",
+        "valuation.pe_pct_5y",
+        "valuation.pb_pct_5y",
+        "growth.revenue_yoy",
+        "growth.deducted_profit_yoy_ttm",
+        "quality.gross_margin",
+        "quality.ocf_to_net_profit",
+        "quality.debt_ratio",
+        "overseas.overseas_ratio",
+        "overseas.overseas_yoy",
+        "catalyst.reports_count_90d",
+        "catalyst.hot_reason_count_30d",
+        "catalyst.news_count_30d",
+        "catalyst.relative_return_60d",
+    ]
+    metric_coverage: dict[str, dict[str, Any]] = {}
+    for field in metric_fields:
+        non_null = sum(
+            1 for r in results
+            if r.metrics is not None and _get_metric_value(r.metrics, field) is not None
+        )
+        metric_coverage[field] = {
+            "non_null": int(non_null),
+            "total": int(total),
+            "coverage_ratio": round(non_null / total, 4) if total else None,
+        }
+
+    score_coverages = [
+        r.metrics.score.coverage_ratio for r in results
+        if r.metrics and r.metrics.score and r.metrics.score.coverage_ratio is not None
+    ]
+    final_scores = [
+        r.metrics.score.final_score for r in results
+        if r.metrics and r.metrics.score and r.metrics.score.final_score is not None
+    ]
+
+    return {
+        "total": int(total),
+        "status_counts": _counter_dict(status_counts),
+        "strategy_status_counts": {
+            strategy: _counter_dict(counter)
+            for strategy, counter in strategy_status_counts.items()
+        },
+        "reason_counts": {
+            name: _counter_dict(counter)
+            for name, counter in reason_counts.items()
+        },
+        "source_status_counts": {
+            name: _counter_dict(counter)
+            for name, counter in source_status_counts.items()
+        },
+        "metric_coverage": metric_coverage,
+        "score": {
+            "scored_count": int(len(final_scores)),
+            "avg_coverage_ratio": (
+                round(sum(score_coverages) / len(score_coverages), 4)
+                if score_coverages else None
+            ),
+            "min_coverage_ratio": round(min(score_coverages), 4) if score_coverages else None,
+            "max_coverage_ratio": round(max(score_coverages), 4) if score_coverages else None,
+        },
+    }
+
+
+def _write_coverage_outputs(out_dir: Path, coverage: dict[str, Any]) -> None:
+    (out_dir / "coverage.json").write_text(
+        json.dumps(coverage, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+
+    low_fields = sorted(
+        coverage.get("metric_coverage", {}).items(),
+        key=lambda item: (
+            item[1].get("coverage_ratio") is None,
+            item[1].get("coverage_ratio") or 0,
+        ),
+    )[:8]
+    lines = [
+        "# Coverage",
+        "",
+        f"- total: {coverage.get('total', 0)}",
+        f"- status_counts: {coverage.get('status_counts', {})}",
+        f"- avg_score_coverage_ratio: {coverage.get('score', {}).get('avg_coverage_ratio')}",
+        "",
+        "## 覆盖率最低字段",
+        "",
+        "| field | non_null | total | coverage_ratio |",
+        "|---|---:|---:|---:|",
+    ]
+    for field, info in low_fields:
+        lines.append(
+            f"| {field} | {info.get('non_null')} | {info.get('total')} | "
+            f"{info.get('coverage_ratio')} |"
+        )
+    lines += [
+        "",
+        "## 原因码分布",
+        "",
+        "```json",
+        json.dumps(coverage.get("reason_counts", {}), ensure_ascii=False, indent=2),
+        "```",
+        "",
+        "## 数据源状态",
+        "",
+        "```json",
+        json.dumps(coverage.get("source_status_counts", {}), ensure_ascii=False, indent=2),
+        "```",
+    ]
+    (out_dir / "coverage.md").write_text("\n".join(lines), encoding="utf-8")
+
+
 def _export_run_outputs(
     *,
     run_id: str,
@@ -288,15 +451,18 @@ def _export_run_outputs(
         df.to_csv(out_dir / "errors.csv",
                   index=False, encoding="utf-8-sig")
 
-    # Markdown 报告
+    # Markdown + coverage 报告
+    coverage = _build_coverage_report(all_results)
+    _write_coverage_outputs(out_dir, coverage)
     _write_markdown_report(
         out_dir / "report.md",
         run_id=run_id, period=period,
         consumer_results=consumer_results,
         overseas_results=overseas_results,
         candidates_total=candidates_total,
+        coverage=coverage,
     )
-    return out_dir
+    return out_dir, coverage
 
 
 def _result_to_csv_row(r: ScreeningResult) -> dict:
@@ -332,6 +498,7 @@ def _write_markdown_report(
     consumer_results: list[ScreeningResult],
     overseas_results: list[ScreeningResult],
     candidates_total: int,
+    coverage: dict[str, Any] | None = None,
 ) -> None:
     def _count(rs: list[ScreeningResult], status: Status) -> int:
         return sum(1 for r in rs if r.status == status)
@@ -358,8 +525,14 @@ def _write_markdown_report(
         "",
         f"- 策略一（消费反转）: {_status_summary(consumer_results)}",
         f"- 策略三（出海隐形冠军）: {_status_summary(overseas_results)}",
-        "",
     ]
+    if coverage:
+        score = coverage.get("score", {})
+        lines += [
+            f"- 评分覆盖率均值: {score.get('avg_coverage_ratio')}",
+            f"- 有效评分数量: {score.get('scored_count')}",
+        ]
+    lines.append("")
 
     for name, rs in (("策略一（消费反转）", consumer_results),
                      ("策略三（出海隐形冠军）", overseas_results)):
@@ -458,6 +631,23 @@ def _merge_fingerprints(fingerprints: dict[str, str]) -> str:
     return "|".join(f"{k}:{v}" for k, v in sorted_fps)
 
 
+def _serialize_run_config(
+    strategy_arg: str,
+    config_schemas: dict[str, ConfigSchema],
+) -> str:
+    """screen_runs.config_json：单策略保留旧结构，all-run 保存所有子策略配置。"""
+    if strategy_arg != "all":
+        return config_schemas[strategy_arg].to_json()
+    payload = {
+        "strategy": "all",
+        "strategies": {
+            strategy: schema.to_dict()
+            for strategy, schema in sorted(config_schemas.items())
+        },
+    }
+    return json.dumps(payload, ensure_ascii=False, default=str)
+
+
 def _load_skip_codes_for_resume(
     store: DuckDBStore,
     period: str,
@@ -480,7 +670,7 @@ def _load_skip_codes_for_resume(
         return set()
     prev_fp = latest.iloc[0]["config_fingerprint"]
     if prev_fp != expected_fp:
-        print(f"  ⚠ 最近 run 配置已变（fingerprint 不同），不跳过")
+        logger.warning("  ⚠ 最近 run 配置已变（fingerprint 不同），不跳过")
         return set()
     prev_run_id = latest.iloc[0]["run_id"]
     prev_rows = store.load_candidate_scores(prev_run_id)
@@ -512,9 +702,14 @@ def main() -> int:
     )
     parser.add_argument(
         "--enable-scoring", action="store_true",
-        help="P2-1：开启评分层（写入 metrics.score.final_score），用于排序和 watch 分层",
+        help="兼容旧参数：评分层现在默认开启",
+    )
+    parser.add_argument(
+        "--disable-scoring", action="store_true",
+        help="关闭评分层（仅用于调试数据采集/策略硬过滤）",
     )
     args = parser.parse_args()
+    args.enable_scoring = not args.disable_scoring
 
     period = args.period
     report_type = _period_to_report_type(period)
@@ -536,40 +731,40 @@ def main() -> int:
         primary_fp = sub_fps[args.strategy]
 
     run_id = _gen_run_id(period)
-    print(f"run_id = {run_id}")
-    print(f"period = {period}  report_type = {report_type}")
-    print(f"strategies = {strategies}  resume = {args.resume}")
+    logger.info(f"run_id = {run_id}")
+    logger.info(f"period = {period}  report_type = {report_type}")
+    logger.info(f"strategies = {strategies}  resume = {args.resume}")
 
     store = DuckDBStore()
     n_cleaned = store.cleanup_stale_screen_runs(max_age_hours=1)
     if n_cleaned:
-        print(f"  ✓ 清理超时 running: {n_cleaned} 个")
+        logger.info(f"  ✓ 清理超时 running: {n_cleaned} 个")
 
     try:
         # 加载候选池
         candidates = store.load_stock_industry()
         if candidates.empty:
-            print("✗ 候选池为空，请先运行 bootstrap_emweb_industry.py")
+            logger.error("✗ 候选池为空，请先运行 bootstrap_emweb_industry.py")
             return 1
-        print(f"  ✓ 候选池 {len(candidates)} 只")
+        logger.info(f"  ✓ 候选池 {len(candidates)} 只")
 
         # 决定 code 列表
         codes = _resolve_codes(
             args=args, store=store, period=period, candidates=candidates,
         )
         if not codes:
-            print("✗ 无 code 可处理")
+            logger.error("✗ 无 code 可处理")
             return 1
-        print(f"  ✓ 待处理 {len(codes)} 只")
+        logger.info(f"  ✓ 待处理 {len(codes)} 只")
 
         candidates_subset = _filter_candidates_by_codes(candidates, codes)
-        print(f"  ✓ 匹配候选池 {len(candidates_subset)} 只")
+        logger.info(f"  ✓ 匹配候选池 {len(candidates_subset)} 只")
 
         # 创建 screen_runs
         store.create_screen_run(
             run_id=run_id, strategy=args.strategy, period=period,
             report_type=report_type,
-            config_json=config_schemas[strategies[0]].to_json(),
+            config_json=_serialize_run_config(args.strategy, config_schemas),
             config_fingerprint=primary_fp,
             input_count=len(candidates_subset),
         )
@@ -581,7 +776,7 @@ def main() -> int:
                 store, period, args.strategy, primary_fp,
             )
             if skip_codes:
-                print(f"  ✓ --resume 跳过 {len(skip_codes)} 只已完成")
+                logger.info(f"  ✓ --resume 跳过 {len(skip_codes)} 只已完成")
 
         # P1.5-1：默认走 LocalCachedSource，先读 DuckDB，缺失才 fallback AkShare + 回写
         source = LocalCachedSource(store=store, upstream=AkShareSource())
@@ -617,7 +812,7 @@ def main() -> int:
                 all_counts[k] = all_counts.get(k, 0) + v
 
         # 输出
-        out_dir = _export_run_outputs(
+        out_dir, coverage = _export_run_outputs(
             run_id=run_id, period=period,
             consumer_results=consumer_results,
             overseas_results=overseas_results,
@@ -633,17 +828,19 @@ def main() -> int:
             run_status = "partial_success"
         else:
             run_status = "success"
-        store.finish_screen_run(run_id, run_status, counts=all_counts)
+        store.finish_screen_run(
+            run_id, run_status, counts=all_counts,
+            coverage_json=coverage,
+        )
 
-        print()
-        print(f"✓ run_id={run_id} status={run_status}")
-        print(f"  counts: {all_counts}")
-        print(f"  output: {out_dir}")
+        logger.info("")
+        logger.info(f"✓ run_id={run_id} status={run_status}")
+        logger.info(f"  counts: {all_counts}")
+        logger.info(f"  output: {out_dir}")
         return 0
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception("run_after_disclosure failed")
         try:
             store.finish_screen_run(run_id, "failed", error=f"{type(e).__name__}: {e}")
         except Exception:

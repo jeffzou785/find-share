@@ -26,6 +26,10 @@ from src.collectors.eastmoney_research import EastMoneyResearchSource
 from src.collectors.ths_forecast import ThsForecastSource
 from src.knowledge.research_rag import ResearchRAG
 from src.storage import DuckDBStore
+from src.utils.logging import configure_logging
+
+
+logger = configure_logging(__name__)
 
 
 def ingest_one_stock(
@@ -47,9 +51,9 @@ def ingest_one_stock(
     if not df.empty:
         n = store.save_broker_reports(df)
         stats["reports_saved"] = n
-        print(f"  [1/4] 东财研报入库: {n} 篇")
+        logger.info(f"  [1/4] 东财研报入库: {n} 篇")
     else:
-        print(f"  [1/4] 东财返回空")
+        logger.info("  [1/4] 东财返回空")
         return stats
 
     # Step 2: 同花顺一致预期
@@ -58,18 +62,18 @@ def ingest_one_stock(
             ths = ThsForecastSource()
             ths_df = ths.get_eps_forecast(code)
             n = store.save_eps_forecast_consensus(ths_df)
-            print(f"  [2/4] 同花顺一致预期入库: {n} 行")
+            logger.info(f"  [2/4] 同花顺一致预期入库: {n} 行")
         except Exception as e:
-            print(f"  [2/4] 同花顺失败（不影响主流程）: {type(e).__name__}: {str(e)[:80]}")
+            logger.warning(f"  [2/4] 同花顺失败（不影响主流程）: {type(e).__name__}: {str(e)[:80]}")
     else:
-        print(f"  [2/4] 同花顺跳过")
+        logger.info("  [2/4] 同花顺跳过")
 
     # Step 3: PDF 下载
     if not skip_pdf:
         pending = store.load_broker_reports(code=code, need_pdf=False)
         if max_pdfs > 0:
             pending = pending.head(max_pdfs)
-        print(f"  [3/4] 待下载 PDF: {len(pending)} 份")
+        logger.info(f"  [3/4] 待下载 PDF: {len(pending)} 份")
         for _, rec in pending.iterrows():
             try:
                 pdf_path = em_src.download_pdf(rec)
@@ -92,16 +96,19 @@ def ingest_one_stock(
                         if chunks > 0:
                             store.mark_broker_report_ingested(rec["report_id"])
                             stats["rag_ingested"] += chunks
-                            print(f"    ✓ {pdf_path.name} ({chunks} chunks)")
+                            logger.info(f"    ✓ {pdf_path.name} ({chunks} chunks)")
                         else:
-                            print(f"    ✓ {pdf_path.name} (已索引)")
+                            logger.info(f"    ✓ {pdf_path.name} (已索引)")
             except Exception as e:
-                print(f"    ✗ {rec.get('publish_date', '')} {rec.get('broker')}: {type(e).__name__}: {str(e)[:60]}")
+                logger.warning(
+                    f"    ✗ {rec.get('publish_date', '')} {rec.get('broker')}: "
+                    f"{type(e).__name__}: {str(e)[:60]}"
+                )
             time.sleep(0.5)
     else:
-        print(f"  [3/4] PDF 下载跳过")
+        logger.info("  [3/4] PDF 下载跳过")
 
-    print(f"  [4/4] RAG ingest: {stats['rag_ingested']} chunks")
+    logger.info(f"  [4/4] RAG ingest: {stats['rag_ingested']} chunks")
     return stats
 
 
@@ -121,9 +128,9 @@ def main() -> int:
     total_stats = {"reports_fetched": 0, "reports_saved": 0, "pdf_downloaded": 0, "rag_ingested": 0}
 
     for code in codes:
-        print(f"\n{'=' * 60}")
-        print(f"处理 {code}")
-        print(f"{'=' * 60}")
+        logger.info(f"\n{'=' * 60}")
+        logger.info(f"处理 {code}")
+        logger.info(f"{'=' * 60}")
         stats = ingest_one_stock(
             code=code,
             max_pages=args.max_pages,
@@ -136,13 +143,13 @@ def main() -> int:
         for k, v in stats.items():
             total_stats[k] += v
 
-    print(f"\n{'=' * 60}")
-    print(f"汇总")
-    print(f"{'=' * 60}")
-    print(f"  研报拉取: {total_stats['reports_fetched']} 篇")
-    print(f"  研报入库: {total_stats['reports_saved']} 篇")
-    print(f"  PDF 下载: {total_stats['pdf_downloaded']} 份")
-    print(f"  RAG chunks: {total_stats['rag_ingested']} 块")
+    logger.info(f"\n{'=' * 60}")
+    logger.info("汇总")
+    logger.info(f"{'=' * 60}")
+    logger.info(f"  研报拉取: {total_stats['reports_fetched']} 篇")
+    logger.info(f"  研报入库: {total_stats['reports_saved']} 篇")
+    logger.info(f"  PDF 下载: {total_stats['pdf_downloaded']} 份")
+    logger.info(f"  RAG chunks: {total_stats['rag_ingested']} 块")
 
     store.close()
     return 0

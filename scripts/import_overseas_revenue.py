@@ -32,10 +32,17 @@ from src.collectors.annual_report_parser import (
 )
 from src.config import config
 from src.storage import DuckDBStore
+from src.utils.logging import configure_logging
 
 
 # 多年金额序列异常阈值：N 年比 N-1 年差 CROSS_YEAR_FACTOR 倍 → 单位识别疑点
 CROSS_YEAR_FACTOR = 100.0
+logger = configure_logging(__name__)
+
+
+def _log(message: str = "") -> None:
+    """批量 PDF 解析耗时较长，输出必须即时刷新。"""
+    logger.info(message)
 
 
 def _record_to_candidate_dict(r: OverseasRevenueRecord) -> dict:
@@ -96,7 +103,7 @@ def _load_history_from_store(store: DuckDBStore) -> dict[str, dict[int, float]]:
 
 def main(year: int = 2024) -> int:
     pdf_dir = config.ANNUAL_REPORT_PDF_DIR
-    print(f"扫描目录: {pdf_dir}")
+    _log(f"扫描目录: {pdf_dir}")
     # canonical: _annual_report.pdf；legacy: _annual.pdf（旧下载器产出）
     canonical = sorted(pdf_dir.glob(f"*_{year}_annual_report.pdf"))
     legacy = sorted(pdf_dir.glob(f"*_{year}_annual.pdf"))
@@ -104,13 +111,13 @@ def main(year: int = 2024) -> int:
     seen = {p.stem.split("_")[0] for p in canonical}
     legacy_only = [p for p in legacy if p.stem.split("_")[0] not in seen]
     pdfs = canonical + legacy_only
-    print(
+    _log(
         f"找到 {len(pdfs)} 份年报 PDF"
         f"（canonical {len(canonical)} + legacy {len(legacy_only)}）\n"
     )
 
     if not pdfs:
-        print("✗ 没有找到 PDF。先跑 scripts/run_phase0_poc.py 下载样本。")
+        _log("✗ 没有找到 PDF。先跑 scripts/run_phase0_poc.py 下载样本。")
         return 1
 
     # 第一步：解析所有 PDF，得到候选记录（保留 candidates）
@@ -123,7 +130,7 @@ def main(year: int = 2024) -> int:
             result = parse_annual_report(pdf_path, stock_code=code)
             if not result.success:
                 parse_failures.append((code, result.error))
-                print(f"  ✗ {code} 解析失败: {result.error}")
+                _log(f"  ✗ {code} 解析失败: {result.error}")
                 continue
 
             best, select_warnings = select_best_record(result.records)
@@ -153,7 +160,7 @@ def main(year: int = 2024) -> int:
                 "_revenue_yuan": best.revenue_yuan,
                 "_candidates_count": len(result.records),
             })
-            print(
+            _log(
                 f"  ✓ {code} {best.region_name}: {best.revenue:,.0f} {best.revenue_unit}"
                 f" = {best.revenue_yuan / 1e8:,.1f} 亿元"
                 f" (共 {len(result.records)} 条候选, confidence={best.confidence}"
@@ -161,10 +168,10 @@ def main(year: int = 2024) -> int:
             )
         except Exception as e:
             parse_failures.append((code, f"{type(e).__name__}: {e}"))
-            print(f"  ✗ {code} 异常: {type(e).__name__}: {e}")
+            _log(f"  ✗ {code} 异常: {type(e).__name__}: {e}")
 
     if not parsed:
-        print("\n✗ 没有成功解析的记录")
+        _log("\n✗ 没有成功解析的记录")
         return 1
 
     # 第二步：多年交叉校验（需要 store）
@@ -196,28 +203,28 @@ def main(year: int = 2024) -> int:
         ]
         df = pd.DataFrame(parsed)[schema_cols]
         n = store.save_overseas_revenue(df.to_dict("records"))
-        print(f"\n✓ 入库 {n} 条记录")
+        _log(f"\n✓ 入库 {n} 条记录")
 
         # 汇总
         n_warning = sum(1 for r in parsed if r["parse_warning"])
         n_high = sum(1 for r in parsed if r["confidence"] == "high")
-        print(f"\n  汇总:")
-        print(f"    总 {len(parsed)} 条；confidence: high={n_high}, "
-              f"medium={sum(1 for r in parsed if r['confidence']=='medium')}, "
-              f"low={sum(1 for r in parsed if r['confidence']=='low')}")
-        print(f"    含 parse_warning: {n_warning} 条")
-        print(f"    解析失败: {len(parse_failures)} 条")
+        _log(f"\n  汇总:")
+        _log(f"    总 {len(parsed)} 条；confidence: high={n_high}, "
+             f"medium={sum(1 for r in parsed if r['confidence']=='medium')}, "
+             f"low={sum(1 for r in parsed if r['confidence']=='low')}")
+        _log(f"    含 parse_warning: {n_warning} 条")
+        _log(f"    解析失败: {len(parse_failures)} 条")
         if parse_failures:
             for code, err in parse_failures[:10]:
-                print(f"      {code}: {err[:60]}")
+                _log(f"      {code}: {err[:60]}")
 
         # 列出有 warning 的（高优先 review）
         if n_warning:
-            print(f"\n  ⚠ 需 review（含 parse_warning）:")
+            _log(f"\n  ⚠ 需 review（含 parse_warning）:")
             for r in parsed:
                 if r["parse_warning"]:
-                    print(f"    {r['stock_code']}: {r['_revenue_yuan']/1e8:.2f} 亿元 "
-                          f"| {r['parse_warning']}")
+                    _log(f"    {r['stock_code']}: {r['_revenue_yuan']/1e8:.2f} 亿元 "
+                         f"| {r['parse_warning']}")
 
         return 0
     finally:

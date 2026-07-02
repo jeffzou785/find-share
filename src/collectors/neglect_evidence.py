@@ -3,8 +3,8 @@
 四个独立信号：
 - 新闻数 (`news_count_30d`)：东财个股新闻
 - 概念板块 (`is_ai_related`)：东财概念板块（AI / 半导体 / 机器人等热门）
-- 热点出现频次 (`hot_reason_count_30d`)：同花顺/东财热点（占位实现，待接入）
-- 行业相对收益 (`relative_return_60d`)：当前 placeholder，需接入行情接口
+- 热点出现频次 (`hot_reason_count_30d`)：同花顺每日热点，按日期缓存
+- 相对收益 (`relative_return_60d`)：个股近 60 交易日相对可配置基准收益
 
 最后通过 `compute_neglect_evidence` 聚合成可读证据字符串。
 
@@ -15,6 +15,9 @@
 """
 from __future__ import annotations
 
+import json
+import re
+from datetime import date, timedelta
 from typing import Optional
 
 import pandas as pd
@@ -33,6 +36,98 @@ AI_CONCEPT_KEYWORDS = (
 )
 
 
+def _extract_codes_from_value(value) -> set[str]:
+    """从接口字段值中提取 6 位 A 股代码。"""
+    codes: set[str] = set()
+    if value is None:
+        return codes
+    for match in re.findall(r"(?<!\d)(\d{6})(?!\d)", str(value)):
+        codes.add(match)
+    return codes
+
+
+def _extract_stock_codes_from_obj(obj) -> set[str]:
+    """递归解析热点接口返回体中的股票代码。"""
+    codes: set[str] = set()
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            key_text = str(key).lower()
+            if "code" in key_text or "代码" in key_text:
+                codes.update(_extract_codes_from_value(value))
+            else:
+                codes.update(_extract_stock_codes_from_obj(value))
+    elif isinstance(obj, list):
+        for item in obj:
+            codes.update(_extract_stock_codes_from_obj(item))
+    elif isinstance(obj, (str, int, float)):
+        codes.update(_extract_codes_from_value(obj))
+    return codes
+
+
+def _parse_json_payload(text: str):
+    """兼容 JSON / JSONP / GBK 解码后的热点文本。"""
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    match = re.search(r"\{.*\}", text, flags=re.S)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except Exception:
+            return None
+    return None
+
+
+def _pick_column(df: pd.DataFrame, candidates: tuple[str, ...]) -> Optional[str]:
+    for col in candidates:
+        if col in df.columns:
+            return col
+    for col in df.columns:
+        col_text = str(col).lower()
+        if any(c.lower() in col_text for c in candidates):
+            return col
+    return None
+
+
+def period_return(df: pd.DataFrame, lookback_days: int = 60) -> Optional[float]:
+    """按最近 N 条交易记录计算区间收益。"""
+    if df is None or df.empty:
+        return None
+    date_col = _pick_column(df, ("日期", "date"))
+    close_col = _pick_column(df, ("收盘", "close"))
+    if close_col is None:
+        return None
+    data = df.copy()
+    if date_col is not None:
+        data[date_col] = pd.to_datetime(data[date_col], errors="coerce")
+        data = data.dropna(subset=[date_col]).sort_values(date_col)
+    data[close_col] = pd.to_numeric(data[close_col], errors="coerce")
+    data = data.dropna(subset=[close_col])
+    if len(data) < 2:
+        return None
+    window = data.tail(lookback_days + 1)
+    start = float(window.iloc[0][close_col])
+    end = float(window.iloc[-1][close_col])
+    if start <= 0:
+        return None
+    return end / start - 1.0
+
+
+def relative_return(
+    stock_df: pd.DataFrame,
+    benchmark_df: pd.DataFrame,
+    lookback_days: int = 60,
+) -> Optional[float]:
+    """个股收益 - 基准收益。"""
+    stock_ret = period_return(stock_df, lookback_days=lookback_days)
+    benchmark_ret = period_return(benchmark_df, lookback_days=lookback_days)
+    if stock_ret is None or benchmark_ret is None:
+        return None
+    return stock_ret - benchmark_ret
+
+
 class NeglectEvidenceCollector:
     """聚合多个被忽视证据信号。
 
@@ -47,8 +142,20 @@ class NeglectEvidenceCollector:
         )
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        hot_lookback_days: int = 30,
+        relative_return_days: int = 60,
+        benchmark_symbol: str = "sh000300",
+        request_timeout: int = 8,
+    ):
         self._concept_cache: Optional[pd.DataFrame] = None
+        self.hot_lookback_days = hot_lookback_days
+        self.relative_return_days = relative_return_days
+        self.benchmark_symbol = benchmark_symbol
+        self.request_timeout = request_timeout
+        self._hot_codes_cache: dict[str, set[str]] = {}
 
     # === 新闻数 ===
     @akshare_call
@@ -144,23 +251,95 @@ class NeglectEvidenceCollector:
                 continue
         return False
 
-    # === 热点出现频次（占位） ===
+    # === 热点出现频次 ===
     def get_hot_reason_count_30d(self, code: str) -> int:
-        """同花顺/东财热点出现频次（占位实现）。
+        """同花顺每日热点近 30 天出现频次。
 
-        TODO: 接入 `stock_hot_rank_em` 历史数据。
-        当前返回 0，不参与 neglect_evidence 聚合。
+        接口失败时返回 0，保持被忽视证据链的保守可用性。
         """
-        return 0
+        code = normalize_code(code)
+        today = date.today()
+        count = 0
+        for offset in range(self.hot_lookback_days):
+            day = today - timedelta(days=offset)
+            try:
+                codes = self._load_hot_codes_for_date(day.strftime("%Y%m%d"))
+            except Exception:
+                codes = set()
+            if code in codes:
+                count += 1
+        return count
 
-    # === 行业相对收益（占位） ===
+    def _load_hot_codes_for_date(self, date_str: str) -> set[str]:
+        if date_str in self._hot_codes_cache:
+            return self._hot_codes_cache[date_str]
+
+        import requests
+
+        url = (
+            "http://zx.10jqka.com.cn/event/api/getharden/"
+            f"date/{date_str}/orderby/date/orderway/desc/charset/GBK/"
+        )
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+            ),
+            "Referer": "http://zx.10jqka.com.cn/",
+        }
+        resp = requests.get(url, headers=headers, timeout=self.request_timeout)
+        text = resp.content.decode("gbk", errors="ignore")
+        payload = _parse_json_payload(text)
+        codes = _extract_stock_codes_from_obj(payload) if payload is not None else set()
+        self._hot_codes_cache[date_str] = codes
+        return codes
+
+    # === 相对收益 ===
     def get_relative_return_60d(self, code: str) -> Optional[float]:
-        """近 60 天相对行业的收益（占位实现）。
+        """近 60 交易日相对基准收益。
 
-        TODO: 需要个股 60 天涨幅 + 行业 60 天涨幅。
-        当前返回 None，不参与 neglect_evidence 聚合。
+        默认基准为沪深 300（`sh000300`）。未来接入行业指数时，只需要替换
+        benchmark_symbol 或新增行业映射，不需要改策略层。
         """
-        return None
+        code = normalize_code(code)
+        try:
+            stock_df = self._load_stock_hist(code)
+            benchmark_df = self._load_benchmark_hist(self.benchmark_symbol)
+            return relative_return(
+                stock_df, benchmark_df,
+                lookback_days=self.relative_return_days,
+            )
+        except Exception:
+            return None
+
+    @akshare_call
+    def _load_stock_hist(self, code: str) -> pd.DataFrame:
+        import akshare as ak
+
+        end_date = date.today()
+        start_date = end_date - timedelta(days=self.relative_return_days * 3)
+        return ak.stock_zh_a_hist(
+            symbol=normalize_code(code),
+            period="daily",
+            start_date=start_date.strftime("%Y%m%d"),
+            end_date=end_date.strftime("%Y%m%d"),
+            adjust="qfq",
+        )
+
+    @akshare_call
+    def _load_benchmark_hist(self, symbol: str) -> pd.DataFrame:
+        import akshare as ak
+
+        df = ak.stock_zh_index_daily(symbol=symbol)
+        if df is None or df.empty:
+            return pd.DataFrame()
+        date_col = _pick_column(df, ("日期", "date"))
+        if date_col is not None:
+            cutoff = pd.Timestamp.now() - pd.Timedelta(days=self.relative_return_days * 3)
+            df = df.copy()
+            df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+            df = df[df[date_col] >= cutoff]
+        return df
 
     # === 聚合 ===
     def compute_neglect_evidence(
@@ -205,8 +384,8 @@ class NeglectEvidenceCollector:
             parts.append(f"近 30 天上 {hot_reason_count_30d} 次热点")
         if relative_return_60d is not None:
             if relative_return_60d < -0.05:
-                parts.append(f"近 60 天跑输行业 {abs(relative_return_60d)*100:.1f}%")
+                parts.append(f"近 60 天跑输基准 {abs(relative_return_60d)*100:.1f}%")
             elif relative_return_60d > 0.05:
-                parts.append(f"近 60 天跑赢行业 {relative_return_60d*100:.1f}%")
+                parts.append(f"近 60 天跑赢基准 {relative_return_60d*100:.1f}%")
 
         return "；".join(parts) if parts else None
