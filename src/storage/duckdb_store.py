@@ -13,6 +13,7 @@
 - disclosures     : 财报披露日历
 - overseas_revenue: 年报附注提取的海外收入（Phase 0 输出）
 - pharma_vbp_events: 医药集采/中标结构化事件
+- global_stock_mappings: A/H/港股代码映射与 vendor symbol
 - backtest_results: screen_run 后 20/60/120 日前瞻收益验证
 - financial_validation_results: screen_run 后下一期财务兑现验证
 """
@@ -185,6 +186,18 @@ CREATE TABLE IF NOT EXISTS pharma_vbp_events (
     evidence_text VARCHAR,
     updated_at TIMESTAMP,
     PRIMARY KEY (code, product_name, vbp_batch)
+);
+
+CREATE TABLE IF NOT EXISTS global_stock_mappings (
+    hk_code VARCHAR PRIMARY KEY,
+    a_code VARCHAR,
+    name VARCHAR,
+    yahoo_symbol VARCHAR,
+    eastmoney_secucode VARCHAR,
+    eastmoney_secid VARCHAR,
+    hk_disclosure_source_gap BOOLEAN,
+    source VARCHAR,
+    updated_at TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS screen_runs (
@@ -609,6 +622,45 @@ class DuckDBStore:
             sql += " WHERE code = ?"
             params.append(code)
         sql += " ORDER BY tender_date DESC NULLS LAST, code"
+        return self.conn.execute(sql, params).df()
+
+    # === global_stock_mappings（A/H/港股代码映射） ===
+    def save_global_stock_mappings(self, df: pd.DataFrame) -> int:
+        if df.empty:
+            return 0
+        df = df.copy()
+        df["updated_at"] = pd.Timestamp.now()
+        cols = [
+            "hk_code", "a_code", "name", "yahoo_symbol",
+            "eastmoney_secucode", "eastmoney_secid",
+            "hk_disclosure_source_gap", "source", "updated_at",
+        ]
+        df = df[[c for c in cols if c in df.columns]]
+        self.upert_dataframe("global_stock_mappings", df)
+        return len(df)
+
+    def load_global_stock_mappings(
+        self,
+        *,
+        a_code: str | None = None,
+        hk_code: str | None = None,
+        has_a_code: bool | None = None,
+    ) -> pd.DataFrame:
+        sql = "SELECT * FROM global_stock_mappings WHERE 1=1"
+        params: list = []
+        if a_code:
+            sql += " AND a_code = ?"
+            a_digits = "".join(ch for ch in str(a_code) if ch.isdigit())
+            params.append(a_digits.zfill(6))
+        if hk_code:
+            sql += " AND hk_code = ?"
+            hk_digits = "".join(ch for ch in str(hk_code) if ch.isdigit())
+            params.append(hk_digits.zfill(5))
+        if has_a_code is True:
+            sql += " AND a_code IS NOT NULL AND TRIM(a_code) != ''"
+        elif has_a_code is False:
+            sql += " AND (a_code IS NULL OR TRIM(a_code) = '')"
+        sql += " ORDER BY COALESCE(a_code, ''), hk_code"
         return self.conn.execute(sql, params).df()
 
     # === overseas_revenue ===

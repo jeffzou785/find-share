@@ -7,8 +7,20 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Optional
 
+import pandas as pd
+
 
 HK_MARKET_PREFIX = "116"
+GLOBAL_STOCK_MAPPING_COLUMNS = [
+    "a_code",
+    "hk_code",
+    "name",
+    "yahoo_symbol",
+    "eastmoney_secucode",
+    "eastmoney_secid",
+    "hk_disclosure_source_gap",
+    "source",
+]
 
 
 @dataclass(frozen=True)
@@ -72,3 +84,44 @@ def build_hk_mapping(
         eastmoney_secid=hk_eastmoney_secid(normalized_hk),
         name=name,
     )
+
+
+def _normalize_bool(value, default: bool = True) -> bool:
+    if value is None or pd.isna(value):
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "是"}:
+        return True
+    if text in {"0", "false", "no", "n", "否"}:
+        return False
+    return default
+
+
+def _optional_text(value, default: str | None = None) -> str | None:
+    if value is None or pd.isna(value):
+        return default
+    text = str(value).strip()
+    return text or default
+
+
+def build_hk_mapping_frame(rows: pd.DataFrame) -> pd.DataFrame:
+    """把人工维护的 A/H/港股映射 CSV 转成标准 vendor symbol 表。"""
+    if rows.empty:
+        return pd.DataFrame(columns=GLOBAL_STOCK_MAPPING_COLUMNS)
+    out: list[dict] = []
+    for _, row in rows.iterrows():
+        mapping = build_hk_mapping(
+            a_code=row.get("a_code"),
+            hk_code=row.get("hk_code"),
+            name=_optional_text(row.get("name")),
+        ).to_dict()
+        if "hk_disclosure_source_gap" in row:
+            mapping["hk_disclosure_source_gap"] = _normalize_bool(
+                row["hk_disclosure_source_gap"],
+                default=True,
+            )
+        mapping["source"] = _optional_text(row.get("source"), default="manual")
+        out.append(mapping)
+    return pd.DataFrame(out, columns=GLOBAL_STOCK_MAPPING_COLUMNS)

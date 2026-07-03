@@ -177,6 +177,7 @@ def test_p0_audit_requires_existing_research_pdfs_and_valid_ground_truth(tmp_pat
         "invalid_human_label:bad_label"
     ]
     assert audit["p0_status"]["pharma_ground_truth_rulebook"] is False
+    assert audit["p0_status"]["global_stock_mapping_nonempty"] is False
 
 
 def test_p0_audit_labels_scope_defaults_to_latest_successful_run(tmp_path: Path):

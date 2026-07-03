@@ -8,8 +8,10 @@ from .eastmoney_research import EastMoneyResearchSource  # noqa: F401
 from .ths_forecast import ThsForecastSource  # noqa: F401
 from .tushare_impl import TushareSource  # noqa: F401
 from .global_stock_mapping import (  # noqa: F401
+    GLOBAL_STOCK_MAPPING_COLUMNS,
     HKStockMapping,
     build_hk_mapping,
+    build_hk_mapping_frame,
     hk_eastmoney_secucode,
     hk_eastmoney_secid,
     hk_yahoo_symbol,

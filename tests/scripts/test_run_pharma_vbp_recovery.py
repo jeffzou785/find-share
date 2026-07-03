@@ -28,9 +28,24 @@ def _load_script():
 run_pharma_vbp_recovery = _load_script()
 
 
+def _pe_pb_history(current_pb=1.0, previous_pb=10.0):
+    dates = pd.date_range("2025-01-01", periods=60, freq="D")
+    return pd.DataFrame({
+        "date": dates,
+        "pb": [previous_pb] * 59 + [current_pb],
+        "pe_ttm": [20.0] * 60,
+        "close": [10.0] * 60,
+    })
+
+
 def test_cli_yoy_threshold_accepts_percent_and_decimal():
     assert run_pharma_vbp_recovery._normalize_cli_yoy_threshold(10.0) == 0.10
     assert run_pharma_vbp_recovery._normalize_cli_yoy_threshold(0.10) == 0.10
+
+
+def test_cli_percentile_threshold_accepts_percent_and_decimal():
+    assert run_pharma_vbp_recovery._normalize_cli_percentile_threshold(70.0) == 70.0
+    assert run_pharma_vbp_recovery._normalize_cli_percentile_threshold(0.70) == 70.0
 
 
 def test_run_screen_uses_local_industry_financials_and_vbp_events(tmp_path: Path):
@@ -84,6 +99,7 @@ def test_run_screen_uses_local_industry_financials_and_vbp_events(tmp_path: Path
                 "evidence_text": "中选",
             }
         ]))
+        store.save_pe_pb_history("600276", _pe_pb_history())
 
         candidates = run_pharma_vbp_recovery._load_candidates(store)
         assert candidates["code"].tolist() == ["600276"]

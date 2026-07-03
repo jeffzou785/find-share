@@ -1,9 +1,11 @@
 """港股代码格式归一测试。"""
 from __future__ import annotations
 
+import pandas as pd
 import pytest
 
 from src.collectors.global_stock_mapping import (
+    build_hk_mapping_frame,
     build_hk_mapping,
     hk_eastmoney_secucode,
     hk_eastmoney_secid,
@@ -45,3 +47,31 @@ def test_normalize_a_code():
 def test_invalid_hk_code_raises():
     with pytest.raises(ValueError):
         normalize_hk_code("abcdef")
+
+
+def test_build_hk_mapping_frame_normalizes_vendor_symbols_and_bool_text():
+    df = build_hk_mapping_frame(pd.DataFrame([
+        {
+            "a_code": "SH603259",
+            "hk_code": "2359.HK",
+            "name": "药明康德",
+            "source": "manual",
+            "hk_disclosure_source_gap": "false",
+        }
+    ]))
+    row = df.iloc[0]
+    assert row["a_code"] == "603259"
+    assert row["hk_code"] == "02359"
+    assert row["yahoo_symbol"] == "2359.HK"
+    assert row["eastmoney_secid"] == "116.02359"
+    assert bool(row["hk_disclosure_source_gap"]) is False
+
+
+def test_build_hk_mapping_frame_defaults_blank_optional_fields():
+    df = build_hk_mapping_frame(pd.DataFrame([
+        {"a_code": "", "hk_code": "700", "name": "", "source": ""}
+    ]))
+    row = df.iloc[0]
+    assert row["a_code"] is None
+    assert row["name"] is None
+    assert row["source"] == "manual"

@@ -71,6 +71,16 @@ class TestSchemaMigration:
         }
         assert expected <= cols
 
+    def test_global_stock_mappings_columns(self, store):
+        rows = store.conn.execute("PRAGMA table_info(global_stock_mappings)").fetchall()
+        cols = {r[1] for r in rows}
+        expected = {
+            "hk_code", "a_code", "name", "yahoo_symbol",
+            "eastmoney_secucode", "eastmoney_secid",
+            "hk_disclosure_source_gap", "source", "updated_at",
+        }
+        assert expected <= cols
+
     def test_stock_industry_emweb_columns_preserved(self, store):
         rows = store.conn.execute("PRAGMA table_info(stock_industry)").fetchall()
         cols = {r[1] for r in rows}
@@ -362,6 +372,33 @@ class TestPharmaVbpEvents:
         row = loaded.iloc[0]
         assert row["product_name"] == "药品A"
         assert row["vbp_status"] == "won"
+
+
+class TestGlobalStockMappings:
+    def test_save_and_load_global_stock_mappings(self, store):
+        df = pd.DataFrame([
+            {
+                "hk_code": "02359",
+                "a_code": "603259",
+                "name": "药明康德",
+                "yahoo_symbol": "2359.HK",
+                "eastmoney_secucode": "02359.HK",
+                "eastmoney_secid": "116.02359",
+                "hk_disclosure_source_gap": True,
+                "source": "manual",
+            }
+        ])
+        assert store.save_global_stock_mappings(df) == 1
+        loaded = store.load_global_stock_mappings(a_code="SH603259")
+        assert len(loaded) == 1
+        row = loaded.iloc[0]
+        assert row["hk_code"] == "02359"
+        assert row["yahoo_symbol"] == "2359.HK"
+        assert bool(row["hk_disclosure_source_gap"]) is True
+
+        df.loc[0, "yahoo_symbol"] = "2359.HK"
+        assert store.save_global_stock_mappings(df) == 1
+        assert len(store.load_global_stock_mappings(hk_code="2359")) == 1
 
 
 class TestBacktestResults:

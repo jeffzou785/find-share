@@ -152,6 +152,16 @@ def build_audit(
         audit["pharma_vbp_events"] = int(len(vbp))
         audit["pharma_vbp_validation_errors"] = vbp_errors
         audit["pharma_vbp_valid_events"] = int(len(vbp) if not vbp_errors else 0)
+        mappings = store.load_global_stock_mappings()
+        audit["global_stock_mappings"] = int(len(mappings))
+        audit["global_stock_mappings_ah"] = int(
+            (
+                mappings.get("a_code", pd.Series(dtype=str))
+                .fillna("")
+                .astype(str)
+                .str.strip() != ""
+            ).sum()
+        )
 
     gt_path = exports_dir / "pharma_vbp_ground_truth.csv"
     if gt_path.exists():
@@ -176,6 +186,7 @@ def build_audit(
         "pharma_ground_truth_min": MIN_SAMPLES,
         "pharma_structured_source_required": audit["pharma_vbp_valid_events"] > 0,
         "pharma_ground_truth_rulebook_required": True,
+        "global_stock_mapping_required": True,
     }
     audit["p0_status"] = {
         "research_report_metadata_200": audit["broker_reports"] >= RESEARCH_REPORTS_MIN,
@@ -187,6 +198,7 @@ def build_audit(
         ),
         "pharma_structured_source_nonempty": audit["pharma_vbp_valid_events"] > 0,
         "pharma_ground_truth_rulebook": audit["pharma_ground_truth_rulebook_exists"],
+        "global_stock_mapping_nonempty": audit["global_stock_mappings"] > 0,
     }
     return audit
 
@@ -215,6 +227,8 @@ def write_report(audit: dict, exports_dir: Path | None = None) -> Path:
         f"- pharma_vbp_events: {audit['pharma_vbp_events']}",
         f"- pharma_vbp_valid_events: {audit['pharma_vbp_valid_events']}",
         f"- pharma_vbp_validation_errors: {audit['pharma_vbp_validation_errors']}",
+        f"- global_stock_mappings: {audit['global_stock_mappings']}",
+        f"- global_stock_mappings_ah: {audit['global_stock_mappings_ah']}",
         "",
         "## Status",
         "",

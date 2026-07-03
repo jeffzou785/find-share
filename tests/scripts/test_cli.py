@@ -35,7 +35,7 @@ class TestCliRouting:
                     "backtest", "financial-validate", "monitor",
                     "p0-audit", "label-export", "label-import",
                     "pharma-vbp", "pharma-gt", "pharma-template",
-                    "pharma-screen"):
+                    "pharma-screen", "global-map"):
             assert cmd in out
 
     def test_unknown_command_errors(self):
@@ -59,3 +59,9 @@ class TestCliRouting:
         assert rc == 0
         assert "--period" in out
         assert "--min-revenue-yoy" in out
+
+    def test_global_map_help_passthrough(self):
+        rc, out, _ = _run_cli("global-map", "--help")
+        assert rc == 0
+        assert "--init-template" in out
+        assert "--csv" in out

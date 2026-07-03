@@ -109,6 +109,16 @@ def _vbp_events(status="won"):
     ])
 
 
+def _pe_pb_history(current_pb=1.0, previous_pb=1.0):
+    dates = pd.date_range("2025-01-01", periods=60, freq="D")
+    return pd.DataFrame({
+        "date": dates,
+        "pb": [previous_pb] * 59 + [current_pb],
+        "pe_ttm": [20.0] * 60,
+        "close": [10.0] * 60,
+    })
+
+
 def test_evaluate_vbp_recovery_hit_when_financials_recover():
     result = evaluate_vbp_recovery_one(
         candidate=_candidate(),
@@ -121,6 +131,21 @@ def test_evaluate_vbp_recovery_hit_when_financials_recover():
     assert result.hit_reason == "vbp_recovery_confirmed"
     assert result.metrics.growth.revenue_yoy == 0.12
     assert result.metrics.source_status.extra["vbp_status"] == "won"
+
+
+def test_evaluate_vbp_recovery_high_pb_percentile_downgrades_hit_to_watch():
+    result = evaluate_vbp_recovery_one(
+        candidate=_candidate(),
+        financials=_financials(),
+        vbp_events=_vbp_events(),
+        pe_pb_history=_pe_pb_history(current_pb=10.0, previous_pb=1.0),
+        run_id="r1",
+        period="2026Q1",
+    )
+    assert result.status == Status.WATCH
+    assert result.watch_reason == "pb_percentile_high_soft_constraint"
+    assert result.metrics.valuation.pb == 10.0
+    assert result.metrics.valuation.pb_pct_5y == 100.0
 
 
 def test_evaluate_vbp_recovery_requires_event():

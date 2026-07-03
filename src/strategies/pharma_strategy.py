@@ -11,6 +11,7 @@ from typing import Literal, Optional
 
 import pandas as pd
 
+from ..indicators.valuation import compute_pe_pb_percentile
 from ..screening import MetricsSchema, ScreeningResult
 from ..screening.period import period_report_date
 
@@ -102,6 +103,8 @@ class VbpRecoveryConfig:
     min_checks_for_hit: int = 3
     min_checks_for_watch: int = 2
     hit_vbp_statuses: tuple[str, ...] = ("won",)
+    pb_percentile_soft_max: float = 70.0
+    pb_percentile_years: int = 5
 
 
 def _join_industry_text(*parts: Optional[str]) -> str:
@@ -303,11 +306,51 @@ def _build_metrics(
     return metrics
 
 
+def _attach_pb_metrics(
+    metrics: MetricsSchema,
+    pe_pb_history: pd.DataFrame,
+    config: VbpRecoveryConfig,
+) -> bool:
+    """补充 PB 分位，并返回是否触发策略二A软约束。"""
+    if pe_pb_history.empty:
+        metrics.source_status.valuation = "missing"
+        metrics.source_status.extra["pb_percentile_status"] = "missing_history"
+        return False
+
+    stat = compute_pe_pb_percentile(
+        pe_pb_history,
+        value_col="pb",
+        years=config.pb_percentile_years,
+    )
+    percentile = stat.get("percentile")
+    current = stat.get("current")
+    metrics.valuation.pb = float(current) if current is not None else None
+    metrics.valuation.history_window = f"{config.pb_percentile_years}y"
+    if config.pb_percentile_years == 3:
+        metrics.valuation.pb_pct_3y = float(percentile) if percentile is not None else None
+    elif config.pb_percentile_years == 10:
+        metrics.valuation.pb_pct_10y = float(percentile) if percentile is not None else None
+    else:
+        metrics.valuation.pb_pct_5y = float(percentile) if percentile is not None else None
+
+    if percentile is None:
+        metrics.source_status.valuation = "missing"
+        metrics.source_status.extra["pb_percentile_status"] = "insufficient_history"
+        metrics.source_status.extra["pb_sample_count"] = str(stat.get("sample_count", 0))
+        return False
+
+    metrics.source_status.valuation = "ok"
+    metrics.source_status.extra["pb_percentile_status"] = "ok"
+    metrics.source_status.extra["pb_percentile_soft_max"] = f"{config.pb_percentile_soft_max:.6f}"
+    return float(percentile) > config.pb_percentile_soft_max
+
+
 def evaluate_vbp_recovery_one(
     *,
     candidate: dict,
     financials: pd.DataFrame,
     vbp_events: pd.DataFrame,
+    pe_pb_history: pd.DataFrame | None = None,
     run_id: str,
     period: str,
     config: VbpRecoveryConfig | None = None,
@@ -370,6 +413,11 @@ def evaluate_vbp_recovery_one(
         checks=checks,
         report_date=report_date,
     )
+    pb_soft_constraint = _attach_pb_metrics(
+        metrics,
+        pe_pb_history if pe_pb_history is not None else pd.DataFrame(),
+        config,
+    )
     evaluated = [c for c in checks.values() if c["passed"] is not None]
     if not evaluated:
         return ScreeningResult.data_missing(
@@ -391,6 +439,12 @@ def evaluate_vbp_recovery_one(
         and passed_count >= config.min_checks_for_hit
         and hit_status_ok
     ):
+        if pb_soft_constraint:
+            return ScreeningResult.watch(
+                **common,
+                watch_reason="pb_percentile_high_soft_constraint",
+                metrics=metrics,
+            )
         return ScreeningResult.hit(
             **common, hit_reason="vbp_recovery_confirmed", metrics=metrics,
         )
@@ -414,6 +468,7 @@ def evaluate_vbp_recovery_batch(
     candidates: pd.DataFrame,
     financials_by_code: dict[str, pd.DataFrame],
     vbp_events: pd.DataFrame,
+    pe_pb_history_by_code: dict[str, pd.DataFrame] | None = None,
     run_id: str,
     period: str,
     config: VbpRecoveryConfig | None = None,
@@ -425,6 +480,7 @@ def evaluate_vbp_recovery_batch(
     events = vbp_events.copy() if not vbp_events.empty else pd.DataFrame()
     if "code" in events.columns:
         events["code"] = events["code"].astype(str).str.zfill(6)
+    pe_pb_history_by_code = pe_pb_history_by_code or {}
     out: list[ScreeningResult] = []
     for _, row in candidates.iterrows():
         code = str(row.get("code", "")).zfill(6)
@@ -437,6 +493,7 @@ def evaluate_vbp_recovery_batch(
                     candidate=row.to_dict(),
                     financials=financials_by_code.get(code, pd.DataFrame()),
                     vbp_events=code_events,
+                    pe_pb_history=pe_pb_history_by_code.get(code, pd.DataFrame()),
                     run_id=run_id,
                     period=period,
                     config=config,
