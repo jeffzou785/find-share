@@ -20,6 +20,8 @@
 - label-import  回写人工标签
 - pharma-vbp    导入医药集采结构化事件
 - pharma-gt     校验策略二 ground truth
+- pharma-template 初始化策略二 CSV 模板
+- pharma-screen 策略二A 集采修复型筛选
 
 用法示例：
     python3 -m src.pipeline.cli bootstrap
@@ -61,6 +63,8 @@ SUBCOMMAND_SCRIPTS: dict[str, str] = {
     "label-import": str(SCRIPTS_DIR / "import_candidate_labels.py"),
     "pharma-vbp": str(SCRIPTS_DIR / "import_pharma_vbp_events.py"),
     "pharma-gt": str(SCRIPTS_DIR / "validate_pharma_ground_truth.py"),
+    "pharma-template": str(SCRIPTS_DIR / "init_pharma_templates.py"),
+    "pharma-screen": str(SCRIPTS_DIR / "run_pharma_vbp_recovery.py"),
     # P2-3 监控
     "monitor": str(SCRIPTS_DIR / "monitor_changes.py"),
 }

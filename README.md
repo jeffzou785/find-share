@@ -48,7 +48,7 @@ DuckDB 16 张表：
 
 ### 策略层 `src/strategies/`
 - `consumer_reversal.py`：策略一 + 反转判定 + P1.5-4 行业覆盖扩展（含化妆品/医美/纺服/服务消费/轻工）+ PE/PB 分位窗口参数化
-- `pharma_strategy.py`：策略二行业池骨架，区分集采修复型与创新药/创新器械出海型，并暂缓 CXO/医药商业/医疗服务/医美混入
+- `pharma_strategy.py`：策略二行业池 + 策略二A集采修复型 MVP，区分集采修复型与创新药/创新器械出海型，并暂缓 CXO/医药商业/医疗服务/医美混入
 - `overseas_champion.py`：策略三 + 3 个扩展过滤 + P1.5-2 多 high 候选 ratio 校验（candidates_json 兜底）+ P1.5-3 被忽视证据链
 - `filters.py`：质量/流动性过滤（剔除 ST/金融/地产/低市值/极端 PE）
 
@@ -62,14 +62,14 @@ jieba 分词 + TF-IDF + SQLite 实现的轻量 RAG（不依赖 chromadb，秒级
 
 ### Pipeline 编排 `src/pipeline/` + `scripts/`
 **P2-0 统一 CLI**：`python3 -m src.pipeline.cli <subcommand>`，封装核心流水线子命令。
-覆盖 bootstrap → 缓存预热 → 策略筛选 → 研报拉取 → RAG 检索 → 动态监控 → P0 审计/标注 全流程。
+覆盖 bootstrap → 缓存预热 → 策略筛选 → 研报拉取 → RAG 检索 → 动态监控 → P0 审计/标注 → 策略二A医药筛选 全流程。
 
 ### 评分与监控层 `src/screening/`（P2 新增）
 - **P2-1 评分层**（`scoring.py`）：线性模型 `growth*0.30 + valuation*0.20 + quality*0.20 + catalyst*0.15 + neglect*0.15 - risk_penalty`；缺失子分按 0.5 中性填充并输出 `coverage_ratio`；0 分位按真实低位处理；只用于排序和 watch 分层，不覆盖硬风控
 - **P2-2 报告期参数化**（`period.py`）：`parse_period("2025A"/"2025H"/"2025Q1"/"2025Q3")` 返回 `PeriodInfo`；季报场景跳过海外收入硬过滤
 - **P2-3 动态监控**（`run_diff.py` + `scripts/monitor_changes.py`）：对比两次 `screen_run`，输出 new_hit / dropped_hit / status_changed / metric_changed / new_parse_warning 五类事件
 - **P2-4 一致性校验**（`consistency.py`）：研报 EPS 预测 vs 财报实际 EPS（偏差>25% → warn）+ 财报海外收入 vs 研报标题关键词匹配；批量预加载避免 N+1
-- **P0/P2 审计修复**：`p0-audit` 采用严格口径，研报必须有本地 PDF，ground truth 必须通过合法标签/原因校验，VBP 事件必须带可追溯证据；`--strategy all` 的 `config_json` 保存所有子策略配置
+- **P0/P2 审计修复**：`p0-audit` 采用严格口径，研报必须有本地 PDF，ground truth 必须通过合法标签/原因校验，VBP 事件必须带可追溯证据，且要求 `docs/pharma_ground_truth_rulebook.md` 存在；`--strategy all` 的 `config_json` 保存所有子策略配置
 - **P2-6 前瞻收益回测**（`backtest.py` + `scripts/backtest_forward_returns.py`）：对 `hit/watch` 候选计算 20/60/120 交易日绝对收益和可选基准相对收益，结果入 `backtest_results`
 - **P2-8 下一期财务验证**（`financial_validation.py` + `scripts/validate_next_financials.py`）：对 `hit/watch` 候选推导下一报告期，验证收入/净利同比是否继续兑现，结果入 `financial_validation_results`
 
@@ -141,8 +141,10 @@ python3 -m src.pipeline.cli p0-audit --all-runs
 python3 -m src.pipeline.cli label-export --output data/exports/human_label_queue.csv
 # 填写 human_label / label_reason 后再导入
 python3 -m src.pipeline.cli label-import data/exports/human_label_queue.csv
+python3 -m src.pipeline.cli pharma-template
 python3 -m src.pipeline.cli pharma-vbp --csv data/exports/pharma_vbp_events.csv
 python3 -m src.pipeline.cli pharma-gt --csv data/exports/pharma_vbp_ground_truth.csv
+python3 -m src.pipeline.cli pharma-screen --period 2025A --limit 100
 
 # 研报 + RAG
 python3 -m src.pipeline.cli reports 600519 --max-pdfs 3
@@ -297,6 +299,7 @@ python3 scripts/research_rag_cli.py search "宇通客车 海外订单" --stock 6
 | **状态化改造修复**（2026-06-27）| 修 `run_overseas_champion` dup `_evaluate_one` 导致旧 CSV 入口不走状态化路径（P1-2/P1-3 增强失效）；修 resume 多策略 fingerprint 不一致；修 AkShare `revenue_yoy`/`gross_margin` 百分数单位；`cleanup_stale_screen_runs` 改用 INTERVAL 字面量 |
 | **P0 闭环工具**（2026-07-01）| 新增 `p0-audit`/`label-export`/`label-import`/`pharma-vbp`/`pharma-gt`；研报元数据覆盖已达 200/200，P0 审计改为要求本地研报 PDF 可用；人工标签、策略二 ground truth、医药集采事件仍需补齐真实样本 |
 | **P0 对抗式审计修复**（2026-07-02）| `p0-audit` 不再给假绿灯：本地研报 PDF 不足、坏 ground truth、空 VBP 证据都会返回 TODO；标注默认按最新成功/部分成功 run 审计，避免历史 run 污染 |
+| **策略二A 工程闭环 MVP**（2026-07-03）| 新增 `pharma-template` 初始化模板、`pharma-screen` 集采修复型筛选入口、`docs/pharma_ground_truth_rulebook.md` 标注规则；`stock_industry` 保留 `sw_second/em2016` 等行业增强列，筛选结果落 `screen_runs/candidate_scores` |
 
 ### P1 - ✅ 已完成（2026-06-27）
 
@@ -337,7 +340,7 @@ python3 scripts/research_rag_cli.py search "宇通客车 海外订单" --stock 6
 
 - 海外收入多 high 候选时，P1.5-2 已自动取最小值并标 parse_warning；策略层 candidates_json 兜底已落地，但极端 case 仍可能漏过（需配合人工 review）
 - 海外收入解析仍有 12 份 PDF 找到附注但未提取到境外行（pdfplumber 表格结构识别限制；P1.5-2 已加区域名词扩展）
-- P0 审计采用严格口径：研报必须有本地 PDF，ground truth 必须通过合法标签/原因校验，VBP 事件必须带 source_url/evidence_text；当前仅研报元数据达到 200/200，仍需下载足量研报 PDF、填写 `data/exports/human_label_queue.csv`，并补齐策略二 `pharma_vbp_events.csv` 与 30 条 ground truth 后，`p0-audit` 才会返回全 OK
+- P0 审计采用严格口径：研报必须有本地 PDF，ground truth 必须通过合法标签/原因校验，VBP 事件必须带 source_url/evidence_text，且标注规则文档必须存在；当前仅研报元数据达到 200/200，仍需下载足量研报 PDF、填写 `data/exports/human_label_queue.csv`，并补齐策略二 `pharma_vbp_events.csv` 与 30 条 ground truth 后，`p0-audit` 才会返回全 OK
 - 核心 P0 pipeline 已接入 logging；部分 legacy 辅助脚本仍保留 print
 - 东财研报 EPS Y1/Y2 "今年/明年"口径跨年（部分发布日期早的研报"今年"指上一年），与同花顺固定年度口径有偏差，交叉验证时注意
 

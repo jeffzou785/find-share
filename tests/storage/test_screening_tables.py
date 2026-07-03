@@ -71,6 +71,28 @@ class TestSchemaMigration:
         }
         assert expected <= cols
 
+    def test_stock_industry_emweb_columns_preserved(self, store):
+        rows = store.conn.execute("PRAGMA table_info(stock_industry)").fetchall()
+        cols = {r[1] for r in rows}
+        assert {"sw_second", "em2016", "csrc_industry", "csrc_section", "province"} <= cols
+
+        store.save_stock_industry(pd.DataFrame([
+            {
+                "code": "600276",
+                "name": "恒瑞医药",
+                "sina_industry": "",
+                "sw_first": "医药生物",
+                "sw_second": "化学制剂",
+                "em2016": "医药生物-化学制药-化学制剂",
+                "csrc_industry": "医药制造业",
+                "csrc_section": "制造业",
+                "province": "江苏",
+            }
+        ]))
+        row = store.load_stock_industry(sw_first=["医药生物"]).iloc[0]
+        assert row["sw_second"] == "化学制剂"
+        assert row["em2016"] == "医药生物-化学制药-化学制剂"
+
     def test_backtest_results_columns(self, store):
         rows = store.conn.execute("PRAGMA table_info(backtest_results)").fetchall()
         cols = {r[1] for r in rows}

@@ -23,6 +23,7 @@ def _load_script(name: str):
 
 validate_pharma_ground_truth = _load_script("validate_pharma_ground_truth")
 import_pharma_vbp_events = _load_script("import_pharma_vbp_events")
+init_pharma_templates = _load_script("init_pharma_templates")
 export_labeling_queue = _load_script("export_labeling_queue")
 p0_audit = _load_script("p0_audit")
 
@@ -89,6 +90,21 @@ def test_validate_vbp_events_rejects_blank_evidence():
     assert "blank_evidence_text:1" in errors
 
 
+def test_pharma_template_columns_cover_importers(tmp_path: Path):
+    output_dir = tmp_path / "exports"
+    assert init_pharma_templates._write_template(
+        output_dir / "pharma_vbp_events.csv",
+        init_pharma_templates.VBP_TEMPLATE_COLUMNS,
+        force=False,
+    ) is True
+    assert (
+        import_pharma_vbp_events.REQUIRED_COLUMNS
+        <= set(init_pharma_templates.VBP_TEMPLATE_COLUMNS)
+    )
+    template = pd.read_csv(output_dir / "pharma_vbp_events.csv")
+    assert list(template.columns) == init_pharma_templates.VBP_TEMPLATE_COLUMNS
+
+
 def test_build_labeling_queue(tmp_path: Path):
     store = DuckDBStore(db_path=tmp_path / "t.duckdb")
     try:
@@ -151,6 +167,7 @@ def test_p0_audit_requires_existing_research_pdfs_and_valid_ground_truth(tmp_pat
         research_dir=research_dir,
         annual_dir=annual_dir,
         exports_dir=exports_dir,
+        docs_dir=tmp_path / "docs_missing",
     )
     assert audit["p0_status"]["research_report_metadata_200"] is True
     assert audit["p0_status"]["research_reports_200"] is False
@@ -159,6 +176,7 @@ def test_p0_audit_requires_existing_research_pdfs_and_valid_ground_truth(tmp_pat
     assert audit["pharma_ground_truth_validation_errors"] == [
         "invalid_human_label:bad_label"
     ]
+    assert audit["p0_status"]["pharma_ground_truth_rulebook"] is False
 
 
 def test_p0_audit_labels_scope_defaults_to_latest_successful_run(tmp_path: Path):

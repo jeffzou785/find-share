@@ -34,7 +34,8 @@ class TestCliRouting:
                     "strategy3", "reports", "pdf", "rag", "baseline",
                     "backtest", "financial-validate", "monitor",
                     "p0-audit", "label-export", "label-import",
-                    "pharma-vbp", "pharma-gt"):
+                    "pharma-vbp", "pharma-gt", "pharma-template",
+                    "pharma-screen"):
             assert cmd in out
 
     def test_unknown_command_errors(self):
@@ -52,3 +53,9 @@ class TestCliRouting:
         assert rc == 0
         assert "--period" in out
         assert "--strategy" in out
+
+    def test_pharma_screen_help_passthrough(self):
+        rc, out, _ = _run_cli("pharma-screen", "--help")
+        assert rc == 0
+        assert "--period" in out
+        assert "--min-revenue-yoy" in out

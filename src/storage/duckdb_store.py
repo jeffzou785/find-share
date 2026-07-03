@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS stock_industry (
     name VARCHAR,
     sina_industry VARCHAR,
     sw_first VARCHAR,
+    sw_second VARCHAR,
+    em2016 VARCHAR,
+    csrc_industry VARCHAR,
+    csrc_section VARCHAR,
+    province VARCHAR,
     pe_ttm DOUBLE,
     pb DOUBLE,
     total_mktcap_wan DOUBLE,
@@ -316,6 +321,12 @@ class DuckDBStore:
         self._add_column_if_missing("candidate_scores", "labeled_at", "TIMESTAMP")
         self._add_column_if_missing("pharma_vbp_events", "source_url", "VARCHAR")
         self._add_column_if_missing("pharma_vbp_events", "evidence_text", "VARCHAR")
+        # 东财 emweb 行业增强列。策略二A/二B 依赖 sw_second/em2016 做行业池切分。
+        self._add_column_if_missing("stock_industry", "sw_second", "VARCHAR")
+        self._add_column_if_missing("stock_industry", "em2016", "VARCHAR")
+        self._add_column_if_missing("stock_industry", "csrc_industry", "VARCHAR")
+        self._add_column_if_missing("stock_industry", "csrc_section", "VARCHAR")
+        self._add_column_if_missing("stock_industry", "province", "VARCHAR")
         # 老库的 disclosures 历史行：从 period 推导 report_type（best effort）
         self.conn.execute(
             "UPDATE disclosures SET report_type = CASE "
@@ -377,6 +388,7 @@ class DuckDBStore:
         # 只保留 stock_industry 表的列
         cols = [
             "code", "name", "sina_industry", "sw_first",
+            "sw_second", "em2016", "csrc_industry", "csrc_section", "province",
             "pe_ttm", "pb", "total_mktcap_wan", "float_mktcap_wan",
             "turnover_ratio", "updated_at",
         ]

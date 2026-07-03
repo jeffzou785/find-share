@@ -111,10 +111,12 @@ def build_audit(
     research_dir: Path | None = None,
     annual_dir: Path | None = None,
     exports_dir: Path | None = None,
+    docs_dir: Path | None = None,
 ) -> dict:
     research_dir = research_dir or config.RESEARCH_REPORT_DIR
     annual_dir = annual_dir or config.ANNUAL_REPORT_PDF_DIR
     exports_dir = exports_dir or config.EXPORTS_DIR
+    docs_dir = docs_dir or (PROJECT_ROOT / "docs")
     audit: dict = {
         "label_scope": {
             "period": period,
@@ -123,6 +125,9 @@ def build_audit(
         },
         "research_pdf_files": _count_pdf_files(research_dir),
         "annual_report_pdf_files": _count_pdf_files(annual_dir),
+        "pharma_ground_truth_rulebook_exists": (
+            docs_dir / "pharma_ground_truth_rulebook.md"
+        ).exists(),
     }
     with DuckDBStore(db_path=db_path) as store:
         audit["broker_reports"] = int(store.conn.execute("SELECT COUNT(*) FROM broker_reports").fetchone()[0])
@@ -170,6 +175,7 @@ def build_audit(
         "current_hit_watch_labels_required": audit["hit_watch_unlabeled"] == 0,
         "pharma_ground_truth_min": MIN_SAMPLES,
         "pharma_structured_source_required": audit["pharma_vbp_valid_events"] > 0,
+        "pharma_ground_truth_rulebook_required": True,
     }
     audit["p0_status"] = {
         "research_report_metadata_200": audit["broker_reports"] >= RESEARCH_REPORTS_MIN,
@@ -180,6 +186,7 @@ def build_audit(
             and audit["pharma_ground_truth_valid"]
         ),
         "pharma_structured_source_nonempty": audit["pharma_vbp_valid_events"] > 0,
+        "pharma_ground_truth_rulebook": audit["pharma_ground_truth_rulebook_exists"],
     }
     return audit
 
@@ -204,6 +211,7 @@ def write_report(audit: dict, exports_dir: Path | None = None) -> Path:
         f"- hit_watch_unlabeled: {audit['hit_watch_unlabeled']}",
         f"- pharma_ground_truth_labeled: {audit['pharma_ground_truth_labeled']} / {MIN_SAMPLES}",
         f"- pharma_ground_truth_validation_errors: {audit['pharma_ground_truth_validation_errors']}",
+        f"- pharma_ground_truth_rulebook_exists: {audit['pharma_ground_truth_rulebook_exists']}",
         f"- pharma_vbp_events: {audit['pharma_vbp_events']}",
         f"- pharma_vbp_valid_events: {audit['pharma_vbp_valid_events']}",
         f"- pharma_vbp_validation_errors: {audit['pharma_vbp_validation_errors']}",
