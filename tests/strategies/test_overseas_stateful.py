@@ -211,6 +211,96 @@ class TestEvaluateOverseasFull:
         assert r.hit_reason == "all_thresholds_met"
         assert r.metrics.overseas.overseas_ratio == pytest.approx(0.30, abs=0.01)
         assert r.metrics.valuation.pe_ttm == 20.0
+        assert r.metrics.source_status.extra["overseas_year_count"] == "1"
+        assert r.metrics.source_status.extra["overseas_yoy_status"] == "single_year"
+
+    def test_low_overseas_yoy_rejected_when_two_years_available(
+        self, tmp_path: Path, base_candidates, hit_config
+    ):
+        """连续两年海外收入可用时，即使 require_overseas_yoy=False 也校验同比。"""
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+        # 2024: 29 亿；2025: 30 亿 → yoy≈3.4%，低于 40%。
+        rows = [
+            {"stock_code": "600031", "report_year": 2024, "region_name": "境外",
+             "revenue": 29.0, "revenue_unit": "亿元",
+             "source_page": 1, "raw_text": "", "pdf_path": ""},
+            {"stock_code": "600031", "report_year": 2025, "region_name": "境外",
+             "revenue": 30.0, "revenue_unit": "亿元",
+             "source_page": 1, "raw_text": "", "pdf_path": ""},
+        ]
+        store.save_overseas_revenue(rows)
+        source = MockSource(_pe_history_low(current=20.0), _fin_with_revenue(revenue=1e10))
+        try:
+            results = evaluate_overseas_full(
+                source=source, store=store,
+                candidates=base_candidates, run_id="r1", period="2025A",
+                show_progress=False, config=hit_config, sina_source=None,
+            )
+            r = results[0]
+            assert r.status == Status.REJECTED
+            assert r.reject_reason == "overseas_yoy_abnormal"
+            assert r.metrics.overseas.overseas_yoy == pytest.approx(1.0 / 29.0, abs=1e-6)
+            assert r.metrics.source_status.extra["overseas_yoy_status"] == "ok"
+        finally:
+            store.close()
+
+    def test_missing_previous_year_yoy_goes_to_data_warning(
+        self, tmp_path: Path, base_candidates, hit_config
+    ):
+        """有两年海外收入但不连续时，无法做同比，应降级 watch 而非误判 hit。"""
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+        rows = [
+            {"stock_code": "600031", "report_year": 2023, "region_name": "境外",
+             "revenue": 20.0, "revenue_unit": "亿元",
+             "source_page": 1, "raw_text": "", "pdf_path": ""},
+            {"stock_code": "600031", "report_year": 2025, "region_name": "境外",
+             "revenue": 30.0, "revenue_unit": "亿元",
+             "source_page": 1, "raw_text": "", "pdf_path": ""},
+        ]
+        store.save_overseas_revenue(rows)
+        source = MockSource(_pe_history_low(current=20.0), _fin_with_revenue(revenue=1e10))
+        try:
+            results = evaluate_overseas_full(
+                source=source, store=store,
+                candidates=base_candidates, run_id="r1", period="2025A",
+                show_progress=False, config=hit_config, sina_source=None,
+            )
+            r = results[0]
+            assert r.status == Status.WATCH
+            assert r.watch_reason == "data_warning"
+            assert r.metrics.source_status.extra["overseas_year_count"] == "2"
+            assert r.metrics.source_status.extra["overseas_yoy_status"] == "missing_prev_year"
+        finally:
+            store.close()
+
+    def test_latest_invalid_overseas_revenue_does_not_fallback_to_old_year(
+        self, tmp_path: Path, base_candidates, hit_config
+    ):
+        """最新年海外收入坏值时，不能用上一年正值冒充最新年数据。"""
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+        rows = [
+            {"stock_code": "600031", "report_year": 2024, "region_name": "境外",
+             "revenue": 30.0, "revenue_unit": "亿元",
+             "source_page": 1, "raw_text": "", "pdf_path": ""},
+            {"stock_code": "600031", "report_year": 2025, "region_name": "境外",
+             "revenue": 0.0, "revenue_unit": "亿元",
+             "source_page": 1, "raw_text": "", "pdf_path": ""},
+        ]
+        store.save_overseas_revenue(rows)
+        source = MockSource(_pe_history_low(current=20.0), _fin_with_revenue(revenue=1e10))
+        try:
+            results = evaluate_overseas_full(
+                source=source, store=store,
+                candidates=base_candidates, run_id="r1", period="2025A",
+                show_progress=False, config=hit_config, sina_source=None,
+            )
+            r = results[0]
+            assert r.status == Status.DATA_MISSING
+            assert r.data_missing_reason == "overseas_revenue_missing"
+            assert r.metrics.source_status.extra["overseas_year_count"] == "1"
+            assert r.metrics.source_status.extra["overseas_yoy_status"] == "missing"
+        finally:
+            store.close()
 
     def test_industry_filter_excluded(self, store_with_overseas, hit_config):
         source = MockSource(_pe_history_low(), _fin_with_revenue())

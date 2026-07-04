@@ -3,7 +3,7 @@
 逻辑：
 - 行业：EM2016/申万一级 机械设备 / 交运设备(汽车) / 基础化工
 - 海外业务：最新年报境外收入占比 > 30%
-- 海外增速：境外收入同比 > 40%（需 2 个年度数据；无则跳过此条件）
+- 海外增速：境外收入同比 > 40%（有连续 2 年数据时强制校验；单年数据保留但降低置信度）
 - 估值：当前 PE-TTM < 25
 - 一致预期增速（可选）：东财研报 EPS Y1/Y2 增速 ≥ 15%
 - 现金流质量（可选）：经营性现金流净额 / 净利润 ≥ 0.7
@@ -70,7 +70,8 @@ class StrategyConfig:
     overseas_ratio_max: float = DEFAULT_OVERSEAS_RATIO_MAX
     overseas_yoy_min: float = DEFAULT_OVERSEAS_YOY_MIN
     pe_ttm_max: float = DEFAULT_PE_TTM_MAX
-    require_overseas_yoy: bool = False  # 当前只入库 1 年数据时跳过增速校验
+    require_overseas_yoy: bool = False  # 显式要求同比数据；缺失时 watch，不硬拒绝
+    enforce_overseas_yoy_when_available: bool = True  # 有连续 2 年数据时默认校验海外收入同比
     sanity_check_yoy: bool = True  # 用同比做数据合理性过滤（|yoy|>5 或 <-80% 视为单位识别错）
     # 扩展条件开关
     # 一致预期默认关：需先跑 scripts/import_research_reports.py 拉研报，否则全市场命中 0
@@ -88,6 +89,20 @@ def is_yoy_anomaly(yoy: Optional[float]) -> bool:
     if yoy is None or pd.isna(yoy):
         return False
     return abs(yoy) > OVERSEAS_YOY_ABS_MAX or yoy < OVERSEAS_YOY_DROP_MIN
+
+
+def _compute_overseas_yoy(
+    yearly: dict[int, float],
+    latest_year: Optional[int],
+    overseas_revenue: Optional[float],
+) -> Optional[float]:
+    """用最新年和上一年境外收入计算同比；没有连续上一年时返回 None。"""
+    if latest_year is None or overseas_revenue is None:
+        return None
+    prev = yearly.get(latest_year - 1)
+    if prev is None or prev <= 0:
+        return None
+    return (overseas_revenue - prev) / prev
 
 
 # === P1-2 被忽视证据 ===
@@ -325,32 +340,47 @@ def _evaluate_one_to_result(
         # 1. overseas_revenue 数据
         # P2-2：季报场景下缺失不直接判 data_missing，仍允许走完财务/估值/质量
         yearly: dict[int, float] = overseas_map.get(code, {})
+        raw_yearly = {
+            int(year): float(revenue)
+            for year, revenue in yearly.items()
+            if revenue is not None and not pd.isna(revenue)
+        }
+        valid_yearly = {
+            year: revenue for year, revenue in raw_yearly.items() if revenue > 0
+        }
+        overseas_year_count = len(valid_yearly)
         overseas_revenue: Optional[float] = None
         latest_year: Optional[int] = None
         overseas_yoy: Optional[float] = None
         overseas_ratio: Optional[float] = None
         ratio_parse_warning: Optional[str] = None
 
-        if yearly:
-            latest_year = max(yearly.keys())
-            overseas_revenue = yearly[latest_year]
+        metrics.source_status.extra["overseas_year_count"] = str(overseas_year_count)
+        if raw_yearly:
+            latest_year = max(raw_yearly.keys())
+            overseas_revenue = raw_yearly[latest_year]
 
         if not overseas_revenue or overseas_revenue <= 0:
             if overseas_required:
                 metrics.source_status.overseas_parser = "missing"
+                metrics.source_status.extra["overseas_yoy_status"] = "missing"
                 return ScreeningResult.data_missing(
                     **common, data_missing_reason="overseas_revenue_missing",
                     metrics=metrics,
                 )
             # 季报：标记缺失但继续
             metrics.source_status.overseas_parser = "missing"
+            metrics.source_status.extra["overseas_yoy_status"] = "missing"
             overseas_revenue = None
         else:
-            # 计算 overseas_yoy（需要 prev year）
-            if latest_year is not None and (latest_year - 1) in yearly:
-                prev = yearly[latest_year - 1]
-                if prev > 0:
-                    overseas_yoy = (overseas_revenue - prev) / prev
+            # 计算 overseas_yoy（需要连续上一年）
+            overseas_yoy = _compute_overseas_yoy(valid_yearly, latest_year, overseas_revenue)
+            if overseas_yoy is not None:
+                metrics.source_status.extra["overseas_yoy_status"] = "ok"
+            elif overseas_year_count == 1:
+                metrics.source_status.extra["overseas_yoy_status"] = "single_year"
+            else:
+                metrics.source_status.extra["overseas_yoy_status"] = "missing_prev_year"
 
         # 2. 拉营收（算海外占比）
         try:
@@ -419,6 +449,9 @@ def _evaluate_one_to_result(
                 if alt_revenue is not None and alt_revenue > 0:
                     overseas_revenue = alt_revenue
                     overseas_ratio = overseas_revenue / revenue
+                    overseas_yoy = _compute_overseas_yoy(valid_yearly, latest_year, overseas_revenue)
+                    if overseas_yoy is not None:
+                        metrics.source_status.extra["overseas_yoy_status"] = "ok"
                     ratio_parse_warning = alt_warn or "candidate_chose_from_json"
                 elif alt_warn:
                     # 候选都不合理 → 记录原因，保持原值，后续阈值检查会 reject
@@ -567,7 +600,18 @@ def _evaluate_one_to_result(
             return ScreeningResult.rejected(
                 **common, reject_reason="pe_ttm_too_high", metrics=metrics
             )
-        if config.require_overseas_yoy and overseas_yoy is not None:
+        enforce_overseas_yoy = overseas_required and (
+            config.require_overseas_yoy
+            or (
+                config.enforce_overseas_yoy_when_available
+                and overseas_year_count >= 2
+            )
+        )
+        if enforce_overseas_yoy:
+            if overseas_yoy is None:
+                return ScreeningResult.watch(
+                    **common, watch_reason="data_warning", metrics=metrics
+                )
             if overseas_yoy < config.overseas_yoy_min:
                 return ScreeningResult.rejected(
                     **common, reject_reason="overseas_yoy_abnormal", metrics=metrics

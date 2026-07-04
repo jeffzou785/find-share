@@ -52,6 +52,9 @@ REJECT_CONSUMER = {
     "pb_percentile_too_high",
     "revenue_yoy_too_low",
     "gross_margin_deteriorating",
+    # P1 策略一经营质量
+    "cashflow_quality_failed",
+    "deducted_profit_quality_failed",
 }
 
 # === 策略三 reject_reason ===

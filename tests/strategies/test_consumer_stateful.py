@@ -60,7 +60,10 @@ def _financials_basic(seq: list[tuple[int, int, float]]) -> pd.DataFrame:
         [
             {"report_date": pd.Timestamp(year=y, month=m, day=28),
              "deducted_net_profit": v, "revenue": v * 10,
+             "net_profit_attr_parent": v * 1.1,
+             "net_profit": v * 1.1,
              "revenue_yoy": 20.0,  # 百分数 20%；策略层 /100 → 0.20 > 0.10
+             "ocf_per_share": 1.0,
              # 毛利率逐年小幅改善（30.0 → 31.0 → 32.0），变化 ≤ 0.5pp
              "gross_margin": 30.0 + 1.0 * (i if i < 3 else 2)}
             for i, (y, m, v) in enumerate(seq)
@@ -350,6 +353,40 @@ class TestP11NewSignals:
         assert r.status == Status.REJECTED
         assert r.reject_reason == "gross_margin_deteriorating"
 
+    def test_ocf_per_share_negative_rejected(self, base_candidates):
+        """每股经营现金流不为正 → rejected cashflow_quality_failed。"""
+        fin = _financials_basic([
+            (2023, 12, 100.0), (2024, 12, 50.0), (2025, 12, 80.0),
+        ])
+        fin.loc[fin.index[-1], "ocf_per_share"] = -0.1
+        source = MockSource(pe_hist=_pe_history(120, value=10.0), fin=fin)
+        results = evaluate_consumer_full(
+            source=source, candidates=base_candidates,
+            run_id="r1", period="2025A", show_progress=False,
+            config=StrategyConfig(min_history_samples=100),
+        )
+        r = results[0]
+        assert r.status == Status.REJECTED
+        assert r.reject_reason == "cashflow_quality_failed"
+        assert r.metrics.source_status.extra["ocf_per_share"] == "-0.100000"
+
+    def test_deducted_profit_quality_low_rejected(self, base_candidates):
+        """扣非净利/归母净利过低 → rejected deducted_profit_quality_failed。"""
+        fin = _financials_basic([
+            (2023, 12, 100.0), (2024, 12, 50.0), (2025, 12, 80.0),
+        ])
+        fin.loc[fin.index[-1], "net_profit_attr_parent"] = 200.0
+        source = MockSource(pe_hist=_pe_history(120, value=10.0), fin=fin)
+        results = evaluate_consumer_full(
+            source=source, candidates=base_candidates,
+            run_id="r1", period="2025A", show_progress=False,
+            config=StrategyConfig(min_history_samples=100),
+        )
+        r = results[0]
+        assert r.status == Status.REJECTED
+        assert r.reject_reason == "deducted_profit_quality_failed"
+        assert r.metrics.source_status.extra["deducted_to_parent_profit"] == "0.400000"
+
     def test_p11_signals_can_be_disabled(self, base_candidates):
         """关掉 P1-1 信号 → 旧 hit 行为恢复（数据缺失也能 hit）。"""
         fin = pd.DataFrame([
@@ -369,6 +406,8 @@ class TestP11NewSignals:
                 require_pb_percentile=False,
                 require_revenue_confirmation=False,
                 require_gross_margin_improvement=False,
+                require_ocf_per_share_positive=False,
+                require_deducted_profit_quality=False,
             ),
         )
         r = results[0]

@@ -54,6 +54,8 @@ TREND_PREV_PREV_MAX = 0.0       #           前前期 yoy < 0%
 DEFAULT_PB_PERCENTILE_MAX = 50.0  # PB 5 年分位 < 50%
 DEFAULT_REVENUE_YOY_MIN = 0.10    # 营收同比 ≥ 10%（避免扣非高增但营收停滞）
 DEFAULT_GROSS_MARGIN_IMPROVEMENT = -0.005  # 毛利率同比下降 ≤ 0.5%（容忍小幅下降）
+DEFAULT_OCF_PER_SHARE_MIN = 0.0  # 每股经营现金流必须为正
+DEFAULT_DEDUCTED_TO_PARENT_MIN = 0.60  # 扣非净利 / 归母净利过低，说明利润质量存疑
 
 # P1.5-4：PE/PB 分位时间窗口支持 3y / 5y / 10y
 SUPPORTED_HISTORY_WINDOWS = (3, 5, 10)
@@ -89,6 +91,15 @@ def is_trend(yoy_series: list[float]) -> bool:
     )
 
 
+def _to_float(value) -> Optional[float]:
+    try:
+        if value is None or pd.isna(value):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass
 class StrategyConfig:
     pe_percentile_max: float = DEFAULT_PE_PERCENTILE_MAX
@@ -105,6 +116,11 @@ class StrategyConfig:
     require_gross_margin_improvement: bool = True
     # 毛利率同比变化下限：-0.005 表示允许下降 0.5pp；正值要求上升
     gross_margin_yoy_min: float = DEFAULT_GROSS_MARGIN_IMPROVEMENT
+    # P1：策略一经营质量过滤。缺失时 watch，明确不达标时 rejected。
+    require_ocf_per_share_positive: bool = True
+    ocf_per_share_min: float = DEFAULT_OCF_PER_SHARE_MIN
+    require_deducted_profit_quality: bool = True
+    deducted_to_parent_min: float = DEFAULT_DEDUCTED_TO_PARENT_MIN
 
     def __post_init__(self) -> None:
         # P1.5-4：history_years 必须在支持窗口内
@@ -211,6 +227,8 @@ def _evaluate_one_to_result(
     - P1-1：PB 分位 > 阈值 → rejected, pb_percentile_too_high
     - P1-1：营收同比 < 阈值 → rejected, revenue_yoy_too_low
     - P1-1：毛利率恶化（同比变化 < gross_margin_yoy_min）→ rejected, gross_margin_deteriorating
+    - P1：每股经营现金流 ≤ 阈值 → rejected, cashflow_quality_failed
+    - P1：扣非净利/归母净利过低 → rejected, deducted_profit_quality_failed
     - 全部通过 → hit, all_thresholds_met
     - 代码异常 → error, 异常 message
 
@@ -324,6 +342,18 @@ def _evaluate_one_to_result(
                     gross_margin_yoy_change = (
                         gross_margin_now - float(prev_gm_raw) / 100.0
                     )
+        ocf_per_share = _to_float(latest.get("ocf_per_share"))
+        net_profit_base = _to_float(latest.get("net_profit_attr_parent"))
+        if net_profit_base is None:
+            net_profit_base = _to_float(latest.get("net_profit"))
+        deducted_profit = _to_float(latest.get("deducted_net_profit"))
+        deducted_to_parent: Optional[float] = None
+        if (
+            deducted_profit is not None
+            and net_profit_base is not None
+            and net_profit_base > 0
+        ):
+            deducted_to_parent = deducted_profit / net_profit_base
 
         # 5. 填充 metrics
         # P1.5-4：所有窗口的分位都写入；阈值用 config.history_years 选的窗口
@@ -339,6 +369,10 @@ def _evaluate_one_to_result(
         metrics.growth.deducted_profit_yoy_ttm = float(yoy)
         metrics.growth.revenue_yoy = revenue_yoy_f
         metrics.quality.gross_margin = gross_margin_now
+        if ocf_per_share is not None:
+            metrics.source_status.extra["ocf_per_share"] = f"{ocf_per_share:.6f}"
+        if deducted_to_parent is not None:
+            metrics.source_status.extra["deducted_to_parent_profit"] = f"{deducted_to_parent:.6f}"
 
         # 6. 应用硬阈值，返回对应状态
         if pe_stat["percentile"] > config.pe_percentile_max:
@@ -382,6 +416,29 @@ def _evaluate_one_to_result(
             if gross_margin_yoy_change < config.gross_margin_yoy_min:
                 return ScreeningResult.rejected(
                     **common, reject_reason="gross_margin_deteriorating", metrics=metrics
+                )
+
+        # P1：经营质量过滤。缺失降级 watch，明确不达标 rejected。
+        if config.require_ocf_per_share_positive:
+            if ocf_per_share is None:
+                return ScreeningResult.watch(
+                    **common, watch_reason="data_warning", metrics=metrics
+                )
+            if ocf_per_share <= config.ocf_per_share_min:
+                return ScreeningResult.rejected(
+                    **common, reject_reason="cashflow_quality_failed", metrics=metrics
+                )
+
+        if config.require_deducted_profit_quality:
+            if deducted_to_parent is None:
+                return ScreeningResult.watch(
+                    **common, watch_reason="data_warning", metrics=metrics
+                )
+            if deducted_to_parent < config.deducted_to_parent_min:
+                return ScreeningResult.rejected(
+                    **common,
+                    reject_reason="deducted_profit_quality_failed",
+                    metrics=metrics,
                 )
 
         return ScreeningResult.hit(
@@ -440,6 +497,8 @@ def _metrics_to_csv_row(result: ScreeningResult) -> dict:
         "is_trend": False,
         "revenue": None,
         "gross_margin": m.quality.gross_margin,
+        "ocf_per_share": m.source_status.extra.get("ocf_per_share"),
+        "deducted_to_parent_profit": m.source_status.extra.get("deducted_to_parent_profit"),
     }
 
 
