@@ -1,6 +1,6 @@
 """collectors 包入口。"""
 from .base import DataSource  # noqa: F401
-from .akshare_impl import AkShareSource  # noqa: F401
+from .a_stock_skill_source import AStockSkillSource  # noqa: F401
 from .cached_impl import LocalCachedSource  # noqa: F401
 from .neglect_evidence import NeglectEvidenceCollector  # noqa: F401
 from .sina_impl import SinaFinancialSource  # noqa: F401
@@ -18,3 +18,21 @@ from .global_stock_mapping import (  # noqa: F401
     normalize_a_code,
     normalize_hk_code,
 )
+
+_AKSHARE_IMPORT_ERROR = None
+try:
+    from .akshare_impl import AkShareSource  # noqa: F401
+except ModuleNotFoundError as exc:
+    _AKSHARE_IMPORT_ERROR = exc
+
+    class AkShareSource:  # type: ignore[no-redef]
+        """AkShare optional fallback.
+
+        新数据路径默认使用 AStockSkillSource；只有显式实例化 AkShareSource 时才要求
+        安装 akshare。
+        """
+
+        def __init__(self, *args, **kwargs):
+            raise ModuleNotFoundError(
+                "akshare 未安装；默认请使用 AStockSkillSource"
+            ) from _AKSHARE_IMPORT_ERROR

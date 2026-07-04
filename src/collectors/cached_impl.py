@@ -1,7 +1,7 @@
 """P1.5-1：本地 DuckDB 缓存的数据源装饰器。
 
 读顺序：先查 DuckDB `pe_pb_history` / `financials` 表；缺失才调被装饰的 upstream
-（通常是 AkShareSource），并把结果回写本地。
+（默认是 AStockSkillSource，旧脚本可能显式传 AkShareSource），并把结果回写本地。
 
 与 `@akshare_call` 的 24h pickle 缓存区别：
 - pickle 缓存：临时文件，进程退出后失效，按过期时间重新拉。
@@ -26,7 +26,7 @@ class LocalCachedSource(DataSource):
     增加本地 DuckDB 缓存（read-through + write-back）。
 
     用法：
-        upstream = AkShareSource()
+        upstream = AStockSkillSource()
         source = LocalCachedSource(store=store, upstream=upstream)
         # 业务代码无感
 

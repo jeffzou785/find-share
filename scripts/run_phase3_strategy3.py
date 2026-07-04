@@ -24,7 +24,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import pandas as pd
 
-from src.collectors import AkShareSource, LocalCachedSource
+from src.collectors import AStockSkillSource, DataSource, LocalCachedSource
 from src.storage import DuckDBStore
 from src.strategies import apply_quality_filter
 from src.strategies.overseas_champion import (
@@ -40,8 +40,8 @@ def main() -> int:
     print("=" * 70)
 
     store = DuckDBStore()
-    # P1.5-1：透明走 LocalCachedSource，先读本地，缺失才 fallback AkShare
-    source = LocalCachedSource(store=store, upstream=AkShareSource())
+    # P1.5-1b：透明走 LocalCachedSource，先读本地，缺失才 fallback 到 $a-stock-data 直连源
+    source = LocalCachedSource(store=store, upstream=AStockSkillSource())
 
     try:
         # 1. 加载候选池
@@ -128,7 +128,7 @@ def main() -> int:
 
 
 def _find_extension_candidates(
-    source: AkShareSource,
+    source: DataSource,
     filtered: pd.DataFrame,
     already_hit: pd.DataFrame,
     top_n: int = 50,

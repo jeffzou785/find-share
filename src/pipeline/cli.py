@@ -5,7 +5,8 @@
 
 子命令：
 - bootstrap     初始化股票列表 + 行业映射（首次运行）
-- refresh       预热 PE/PB 历史 + 财务摘要到本地 DuckDB（P1.5-1）
+- refresh       预热 PE/PB 当前快照 + 财务摘要到本地 DuckDB（P1.5-1）
+- refresh-skill 基于 $a-stock-data 补腾讯/新浪/巨潮/研报数据
 - screen        财报披露后筛选主入口（run_after_disclosure.py）
 - strategy1     策略一：消费反转（run_phase2_strategy1.py）
 - strategy3     策略三：出海隐形冠军（run_phase3_strategy3.py）
@@ -48,6 +49,7 @@ SUBCOMMAND_SCRIPTS: dict[str, str] = {
     "bootstrap": str(PROJECT_ROOT / "src" / "pipeline" / "bootstrap.py"),
     "bootstrap-industry": str(SCRIPTS_DIR / "bootstrap_emweb_industry.py"),
     "refresh": str(SCRIPTS_DIR / "refresh_financials_and_valuation.py"),
+    "refresh-skill": str(SCRIPTS_DIR / "refresh_a_stock_skill_data.py"),
     "screen": str(SCRIPTS_DIR / "run_after_disclosure.py"),
     "strategy1": str(SCRIPTS_DIR / "run_phase2_strategy1.py"),
     "strategy3": str(SCRIPTS_DIR / "run_phase3_strategy3.py"),

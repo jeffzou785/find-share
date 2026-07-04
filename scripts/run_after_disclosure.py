@@ -40,7 +40,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import pandas as pd
 
-from src.collectors import AkShareSource, LocalCachedSource
+from src.collectors import AStockSkillSource, DataSource, LocalCachedSource
 from src.config import config
 from src.screening import (
     ConfigSchema,
@@ -198,7 +198,7 @@ def _filter_candidates_by_codes(
 def _run_strategy(
     *,
     strategy: str,
-    source: AkShareSource,
+    source: DataSource,
     store: DuckDBStore,
     candidates_subset: pd.DataFrame,
     run_id: str,
@@ -778,8 +778,9 @@ def main() -> int:
             if skip_codes:
                 logger.info(f"  ✓ --resume 跳过 {len(skip_codes)} 只已完成")
 
-        # P1.5-1：默认走 LocalCachedSource，先读 DuckDB，缺失才 fallback AkShare + 回写
-        source = LocalCachedSource(store=store, upstream=AkShareSource())
+        # P1.5-1：默认走 LocalCachedSource，先读 DuckDB；
+        # 缺失时 fallback 到 `$a-stock-data` 口径的腾讯/新浪直连接口 + 回写。
+        source = LocalCachedSource(store=store, upstream=AStockSkillSource())
 
         # 跑策略
         consumer_results: list[ScreeningResult] = []

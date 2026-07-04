@@ -16,8 +16,9 @@ A 股选股框架：基于公开数据的量化初筛 + 研报深度分析的两
 
 | 模块 | 功能 | 文件 |
 |------|------|------|
-| `AkShareSource` | 7 个核心接口（股票列表/行业/PE 历史/财报/披露日历），带重试 + 24h 缓存 | `akshare_impl.py` |
-| `LocalCachedSource` | **P1.5-1**：装饰 DataSource，先读 DuckDB `pe_pb_history`/`financials`，缺失才 fallback + 回写 | `cached_impl.py` |
+| `AStockSkillSource` | `$a-stock-data` 口径 A 股直连源：腾讯估值快照 + 新浪三表汇总，不再默认 fallback AkShare | `a_stock_skill_source.py` |
+| `AkShareSource` | 历史兼容实现；默认财报季筛选已改用 `AStockSkillSource` | `akshare_impl.py` |
+| `LocalCachedSource` | **P1.5-1**：装饰 DataSource，先读 DuckDB `pe_pb_history`/`financials`，缺失才 fallback 到当前 upstream + 回写 | `cached_impl.py` |
 | `NeglectEvidenceCollector` | **P1.5-3**：东财个股新闻 + AI/半导体概念识别 + 同花顺热点频次 + 近 60 日相对收益 + 被忽视证据聚合 | `neglect_evidence.py` |
 | `SinaFinancialSource` | 新浪财报三表（利润表/资产负债表/现金流量表），70+ 科目中英映射 | `sina_impl.py` |
 | `EastMoneyResearchSource` | 东财研报列表（评级 + 三年 EPS 预测）+ PDF 下载（pdf.dfcfw.com 带 Referer 鉴权）| `eastmoney_research.py` |
@@ -111,8 +112,12 @@ python3 -m src.pipeline.cli list
 python3 -m src.pipeline.cli bootstrap
 python3 -m src.pipeline.cli bootstrap-industry                    # 全市场行业映射
 
-# 预热本地财务/估值数据（P1.5-1，让策略跑得更快更稳）
+# 预热本地财务/估值快照（P1.5-1，让策略跑得更快更稳）
 python3 -m src.pipeline.cli refresh --limit 30
+
+# 使用 $a-stock-data 口径补数：腾讯/新浪/巨潮/东财研报；默认不补 2023，包含 2026Q1
+python3 -m src.pipeline.cli refresh-skill --from-run <run_id> --download-pdfs --parse-overseas
+python3 -m src.pipeline.cli refresh-skill --codes 000420 000545 --annual-years 2024 2025 --q1-year 2026
 
 # 跑策略（统一入口）
 python3 -m src.pipeline.cli strategy1                              # 策略一：消费反转
@@ -193,7 +198,7 @@ python3 scripts/research_rag_cli.py info                # 查看 RAG 状态
 ### 预热本地缓存（P1.5-1，新增）
 
 ```bash
-# 全候选池预热 PE/PB 历史 + 财务摘要到本地 DuckDB
+# 全候选池预热 PE/PB 当前快照 + 财务摘要到本地 DuckDB
 python3 scripts/refresh_financials_and_valuation.py
 
 # 只跑指定股票 / 限制数量 / 按行业过滤
@@ -206,7 +211,9 @@ python3 scripts/refresh_financials_and_valuation.py --force
 ```
 
 预热后，`run_after_disclosure.py` / `run_phase2_strategy1.py` / `run_phase3_strategy3.py`
-通过 `LocalCachedSource` 自动从本地读，缺失才 fallback AkShare + 回写。
+通过 `LocalCachedSource` 自动从本地读；缺失时默认 fallback 到 `$a-stock-data`
+口径的 `AStockSkillSource`（腾讯估值快照 + 新浪三表）并回写。注意：
+腾讯只提供当前 PE/PB 快照，不伪造 3/5/10 年历史分位。
 
 ### 拉研报（新增）
 
@@ -320,7 +327,8 @@ python3 scripts/research_rag_cli.py search "宇通客车 海外订单" --stock 6
 
 | 功能 | 完成内容 |
 |------|---------|
-| **P1.5-1 财务/估值本地落库**（`cached_impl.py` + `refresh_financials_and_valuation.py`）| `LocalCachedSource` 装饰 AkShare：先读 DuckDB `pe_pb_history`/`financials`，缺失才 fallback + 回写；新增批量预热脚本；策略代码透明切换 |
+| **P1.5-1 财务/估值本地落库**（`cached_impl.py` + `refresh_financials_and_valuation.py`）| `LocalCachedSource` 先读 DuckDB `pe_pb_history`/`financials`，缺失才 fallback + 回写；默认 fallback 为 `$a-stock-data` 当前估值快照 + 新浪三表；策略代码透明切换，历史 PE/PB 分位仍依赖本地已有样本 |
+| **P1.5-1b `$a-stock-data` 补数入口**（2026-07-04）| 新增 `AStockSkillSource` 与 `refresh-skill`：按腾讯/新浪/巨潮/东财研报口径补 A 股数据；默认补 2024/2025 年报和 2026Q1，不处理 2023 |
 | **P1.5-2 海外收入困难样本**（`annual_report_parser.py` + `overseas_champion.py`）| `select_best_record` 多 high 候选 max/min > 5x 时取**最小**（避免误抓总营收，600690 案例）+ 策略层 `_pick_plausible_candidate` 从 `candidates_json` 选合理 ratio + 关键词扩展（美洲/欧洲/亚洲等区域名词） |
 | **P1.5-3 被忽视证据链**（`neglect_evidence.py`）| `NeglectEvidenceCollector`：东财个股新闻数（`news_count_30d`）+ AI/半导体概念识别（`is_ai_related`）+ 同花顺热点频次（`hot_reason_count_30d`）+ 近 60 日相对基准收益（`relative_return_60d`）+ `compute_neglect_evidence` 聚合可读证据；不改硬过滤，仅填 metrics.catalyst |
 | **P1.5-4 策略一行业覆盖+窗口参数化**（`consumer_reversal.py`）| `TARGET_INDUSTRIES` 扩展（化妆品/个护/医美/纺服/服务消费/轻工）+ `SUPPORTED_HISTORY_WINDOWS = (3, 5, 10)` + PE/PB 分位三窗口全填入 metrics + `history_years` 校验 |
@@ -384,11 +392,11 @@ trusted-host = pypi.tuna.tsinghua.edu.cn
 pip install "setuptools<70"
 ```
 
-### 4. AkShare 接口偶发失败
+### 4. 历史 AkShare 兼容路径
 
-**症状**：`stock_value_em` 等接口偶发返回空。
+**症状**：旧脚本或历史 baseline 工具显式调用 `AkShareSource` 时，可能遇到 `stock_value_em` 返回空，或本地 Python 环境未安装 `akshare`。
 
-**解决**：已用 `@akshare_call` 装饰器做了 3 次指数退避重试 + 24h pickle 缓存。仍失败时可加 `force_refresh=True` 跳过缓存。
+**解决**：财报季主筛选入口已默认改用 `AStockSkillSource`（腾讯估值快照 + 新浪三表）并由 `LocalCachedSource` 回写 DuckDB，缺少 AkShare 不影响 `screen` / `strategy1` / `strategy3` 默认运行。只有需要跑历史 `data_source_baseline.py` 或 `akshare_impl.py` 兼容路径时，才需要补装并排查 AkShare。
 
 ### 5. 申万行业成分股接口有 bug
 
@@ -413,7 +421,8 @@ find-share/
 ├── src/
 │   ├── collectors/                  # 数据采集层
 │   │   ├── base.py                  # DataSource Protocol
-│   │   ├── akshare_impl.py          # AkShare 主实现（7 接口）
+│   │   ├── a_stock_skill_source.py  # $a-stock-data 口径 A 股直连源
+│   │   ├── akshare_impl.py          # AkShare 历史兼容实现
 │   │   ├── cached_impl.py           # P1.5-1 LocalCachedSource
 │   │   ├── neglect_evidence.py      # P1.5-3 被忽视证据 collector
 │   │   ├── sina_impl.py             # 新浪财报三表
@@ -436,7 +445,7 @@ find-share/
 ├── data/
 │   ├── duckdb/                      # 主数据库（不入库）
 │   ├── pdfs/                        # 原始年报 PDF（不入库）
-│   ├── cache/                       # AkShare/Sina/RAG 缓存（不入库）
+│   ├── cache/                       # AStock/Sina/RAG/AkShare兼容缓存（不入库）
 │   └── exports/                     # CSV/MD 结果输出
 └── research_reports/                # 研报文件夹（含 broker/ 子目录，不入库）
 ```
@@ -447,7 +456,7 @@ find-share/
 
 | 触发条件 | 升级动作 | 工作量 |
 |---------|---------|--------|
-| AkShare 接口连续 3 天失败率>20% | 切 Tushare 2000 积分（一次性约 2000 元）| 写 `tushare_impl.py`，业务代码零修改，约 2-3 天 |
+| `$a-stock-data` 直连源仍无法覆盖关键字段 | 评估 Tushare 2000 积分兜底（一次性约 2000 元）| `tushare_impl.py` stub 已有，接真实字段约 2-3 天 |
 | 需要盘中实时监控 | 加 websocket 行情接入 | 接东财/雪球推送，1-2 天 |
 | 研报量 > 100 篇 | 升级 RAG 到 embedding | metadata + 同义词 + 模板已落地，外部 embedding API 是下一步，本地模型最后评估 |
 | 需要全市场一致预期过滤 | 批量跑 `import_research_reports.py` 后开 `require_consensus_growth=True` | 数据拉取 ~30 分钟 |

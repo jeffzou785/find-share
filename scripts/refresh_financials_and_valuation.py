@@ -1,10 +1,13 @@
-"""P1.5-1：批量预热 PE/PB 历史 + 财务摘要到本地 DuckDB。
+"""P1.5-1：批量预热 PE/PB 估值快照 + 财务摘要到本地 DuckDB。
 
 跑过此脚本后，`run_after_disclosure.py` / `run_phase2_strategy1.py` /
 `run_phase3_strategy3.py` 在 `--use-local-cache` 模式下从 DuckDB 直接读取，
-不再实时调 AkShare，避免：
-- 财报季 AkShare 数据被修订导致同一报告期跑两次结果不一致。
+默认不再实时调 AkShare，避免：
+- 财报季外部接口数据被修订导致同一报告期跑两次结果不一致。
 - 30 只候选股 × 多接口实时拉的耗时和反爬风险。
+
+注意：默认上游是 `$a-stock-data` 口径的 `AStockSkillSource`。腾讯只提供当前
+PE/PB 快照，不提供历史估值序列；策略一的历史分位仍依赖本地已有历史样本。
 
 用法：
     # 默认全候选池预热
@@ -35,7 +38,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import pandas as pd
 from tqdm import tqdm
 
-from src.collectors import AkShareSource
+from src.collectors import AStockSkillSource, DataSource
 from src.storage import DuckDBStore
 
 
@@ -59,7 +62,7 @@ def _should_skip_code(store: DuckDBStore, code: str, force: bool) -> bool:
 
 
 def _refresh_one(
-    store: DuckDBStore, source: AkShareSource, code: str
+    store: DuckDBStore, source: DataSource, code: str
 ) -> dict[str, str]:
     """刷新单只股票。返回 {"pe": "ok|missing|error", "fin": "ok|missing|error"}。"""
     out = {"pe": "missing", "fin": "missing"}
@@ -97,7 +100,7 @@ def main() -> int:
     print("=" * 70)
 
     store = DuckDBStore()
-    source = AkShareSource()
+    source = AStockSkillSource()
 
     try:
         candidates = store.load_stock_industry()
