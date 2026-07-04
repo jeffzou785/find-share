@@ -75,6 +75,46 @@ jieba 分词 + TF-IDF + SQLite 实现的轻量 RAG（不依赖 chromadb，秒级
 - **P2-6 前瞻收益回测**（`backtest.py` + `scripts/backtest_forward_returns.py`）：对 `hit/watch` 候选计算 20/60/120 交易日绝对收益和可选基准相对收益，结果入 `backtest_results`
 - **P2-8 下一期财务验证**（`financial_validation.py` + `scripts/validate_next_financials.py`）：对 `hit/watch` 候选推导下一报告期，验证收入/净利同比是否继续兑现，结果入 `financial_validation_results`
 
+## 当前交接快照（2026-07-04）
+
+最近一轮财报季主 run：
+
+- `run_id=20260704_112743_614f_2025A`
+- 输出目录：`data/exports/runs/20260704_112743_614f_2025A/`
+- 状态：`partial_success`
+- 结果：策略三 `hit=1`（`001325 元创股份`）、`watch=6`（`000837`/`001207`/`001231`/`001239`/`001288`/`002145`）；策略一仍主要卡在 `pe_history_missing`
+- 交接文件：`data/exports/latest_candidate_evidence.md`、`data/exports/human_label_queue.csv`、`data/exports/p0_audit.md`
+
+已完成的数据补齐：
+
+- `$a-stock-data` 补数入口已覆盖最近缺失池：32 只股票财务/估值补齐成功，默认补 2024/2025 年报与 2026Q1，不补 2023。
+- 研报 P0 数量门槛已过：`broker_reports=263`，本地 PDF 元数据 `205`，`research_reports/` 下 PDF 文件 `219`，RAG chunks `2502`。
+- A/H 映射已有第一批 5 条：药明康德、康龙化成、泰格医药、君实生物、百济神州，可供 `$global-stock-data` 港股扩展池继续接入。
+
+当前 P0 审计剩余 TODO：
+
+- 回写最新 7 只 `hit/watch` 的 `human_label` / `label_reason`。
+- 补齐策略二医药 `pharma_vbp_events.csv` 和至少 30 条 `pharma_vbp_ground_truth.csv`。
+- 修正少数原因码与解析难例：策略三部分负 PE/估值异常目前会被归为 `financial_data_missing`；`001311`/`002085` 仍缺海外收入；`001288`、`002145` 的海外收入候选需要人工复核并沉淀 golden case。
+
+推荐接手顺序：
+
+```bash
+cat data/exports/p0_audit.md
+cat data/exports/latest_candidate_evidence.md
+
+# 标注 human_label / label_reason 后回写
+python3 -m src.pipeline.cli label-import data/exports/human_label_queue.csv
+
+# 补策略二结构化样本
+python3 -m src.pipeline.cli pharma-template
+python3 -m src.pipeline.cli pharma-vbp --csv data/exports/pharma_vbp_events.csv
+python3 -m src.pipeline.cli pharma-gt --csv data/exports/pharma_vbp_ground_truth.csv
+
+# 复核 P0 闭环
+python3 -m src.pipeline.cli p0-audit --period 2025A --strategy all
+```
+
 ---
 
 ## 快速开始
@@ -296,7 +336,7 @@ python3 scripts/research_rag_cli.py search "宇通客车 海外订单" --stock 6
 
 ## 待升级项（按优先级）
 
-### P0 - ✅ 工程闭环完成 / ⏳ 数据闭环待补齐
+### P0 - ✅ 工程与研报闭环完成 / ⏳ 标签与医药样本待补齐
 
 | 阶段 | 完成内容 |
 |------|---------|
@@ -311,6 +351,7 @@ python3 scripts/research_rag_cli.py search "宇通客车 海外订单" --stock 6
 | **P0 对抗式审计修复**（2026-07-02）| `p0-audit` 不再给假绿灯：本地研报 PDF 不足、坏 ground truth、空 VBP 证据都会返回 TODO；标注默认按最新成功/部分成功 run 审计，避免历史 run 污染 |
 | **策略二A 工程闭环 MVP**（2026-07-03）| 新增 `pharma-template` 初始化模板、`pharma-screen` 集采修复型筛选入口、`docs/pharma_ground_truth_rulebook.md` 标注规则；`stock_industry` 保留 `sw_second/em2016` 等行业增强列，筛选结果落 `screen_runs/candidate_scores` |
 | **策略二A PB软约束 + A/H映射闭环**（2026-07-03）| `pharma-screen` 读取本地 `pe_pb_history` 计算 PB 分位，超过软阈值只降级 watch；新增 `global-map`、`global_stock_mappings` 表和 P0 审计项，为策略二B港股扩展池/A+H 对照做前置 |
+| **P0 数据补齐与交接快照**（2026-07-04）| `refresh-skill` 补齐最新缺失池 32 只；最新 `screen` run 为 `20260704_112743_614f_2025A`；研报 PDF/RAG 达 P0 门槛（263 条元数据、205 份本地 PDF、219 个 PDF 文件、2502 个 RAG chunks）；A/H 映射已有 5 条；待完成最新 7 只人工标签、策略二 30 条 ground truth 与 VBP 事件 |
 
 ### P1 - ✅ 已完成（2026-06-27）
 
@@ -354,7 +395,7 @@ python3 scripts/research_rag_cli.py search "宇通客车 海外订单" --stock 6
 
 - 海外收入多 high 候选时，P1.5-2 已自动取最小值并标 parse_warning；策略层 candidates_json 兜底已落地，兜底后海外同比会按修正值重算，但极端 case 仍可能漏过（需配合人工 review）
 - 海外收入解析仍有 12 份 PDF 找到附注但未提取到境外行（pdfplumber 表格结构识别限制；P1.5-2 已加区域名词扩展）
-- P0 审计采用严格口径：研报必须有本地 PDF，ground truth 必须通过合法标签/原因校验，VBP 事件必须带 source_url/evidence_text，标注规则文档和 A/H 映射也必须存在；当前仅研报元数据达到 200/200，仍需下载足量研报 PDF、填写 `data/exports/human_label_queue.csv`，并补齐策略二 `pharma_vbp_events.csv`、30 条 ground truth 与 `global_stock_mappings.csv` 后，`p0-audit` 才会返回全 OK
+- P0 审计采用严格口径：研报必须有本地 PDF，ground truth 必须通过合法标签/原因校验，VBP 事件必须带 source_url/evidence_text，标注规则文档和 A/H 映射也必须存在；当前研报 PDF/RAG 与 A/H 映射已达门槛，仍需填写 `data/exports/human_label_queue.csv`，并补齐策略二 `pharma_vbp_events.csv` 与 30 条 ground truth 后，`p0-audit` 才会返回全 OK
 - 核心 P0 pipeline 已接入 logging；部分 legacy 辅助脚本仍保留 print
 - 东财研报 EPS Y1/Y2 "今年/明年"口径跨年（部分发布日期早的研报"今年"指上一年），与同花顺固定年度口径有偏差，交叉验证时注意
 
@@ -435,7 +476,7 @@ find-share/
 │   │   ├── annual_report_parser.py  # 年报境外收入解析
 │   │   ├── industry_mapping.py      # 申万↔新浪行业映射
 │   │   └── _retry.py                # @akshare_call 装饰器
-│   ├── storage/                     # DuckDB 持久化（16 张表）
+│   ├── storage/                     # DuckDB 持久化（17 张表）
 │   ├── indicators/                  # PE/PB 分位（3y/5y/10y）+ TTM 增速
 │   ├── strategies/                  # 策略一/三 + 过滤器 + 反转判定
 │   ├── knowledge/                   # 研报 RAG（jieba+TF-IDF+SQLite+同义词扩展）

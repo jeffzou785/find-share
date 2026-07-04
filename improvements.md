@@ -3,13 +3,36 @@
 > 本文基于 `review.md` 的对抗式审查、当前 `README.md` 已完成状态、现有 `src/` 代码结构，以及 `$a-stock-data` 可用数据源重新整理。  
 > 核心原则：先修真实瓶颈，再加新指标；先有数据和标签，再谈模型和阈值。
 
+## 0. 当前落地状态快照（2026-07-04）
+
+本文件现在既是优化建议，也是下一轮工具接手开发的路线图。当前状态如下：
+
+已完成：
+
+- `$a-stock-data` A 股补数入口：`AStockSkillSource` + `refresh-skill` 已落地，默认补 2024/2025 年报和 2026Q1，不补 2023。
+- 最新缺失池补数：32 只股票财务/估值补齐成功，`financials_full` 入库 33949 行；年报/Q1 PDF 下载与海外收入解析已跑过一轮。
+- 最新财报季 run：`20260704_112743_614f_2025A`，策略三 `hit=1`、`watch=6`，策略一主要剩余 `pe_history_missing`。
+- 研报 P0 数量门槛：`broker_reports=263`，本地 PDF 元数据 `205`，`research_reports/` PDF 文件 `219`，RAG chunks `2502`。
+- 人工标注工具链：`label-export` / `label-import` 已具备，最新标注队列在 `data/exports/human_label_queue.csv`。
+- 策略二A 工程 MVP：`pharma-template` / `pharma-vbp` / `pharma-gt` / `pharma-screen` 已具备，标注规则在 `docs/pharma_ground_truth_rulebook.md`。
+- 港股/A+H 前置：`global_stock_mappings` 表与 `global-map` 已具备，第一批 5 条 A/H 映射已入库，可继续接 `$global-stock-data`。
+- P2 基础验证：评分覆盖率、前瞻收益回测、下一期财务验证、RAG 去重与章节标题均已落地。
+
+仍需收尾：
+
+- 最新 7 只 `hit/watch` 需要人工回写 `human_label` / `label_reason`。
+- 策略二医药仍缺真实 `pharma_vbp_events.csv` 和至少 30 条 `pharma_vbp_ground_truth.csv`。
+- 策略一低位判断仍缺历史 PE/PB 序列，腾讯估值快照不能替代 3/5/10 年分位。
+- 策略三需修正少数解析与原因码：`001311`/`002085` 海外收入缺口，`001288`/`002145` 候选值需复核，负 PE/估值异常不应继续归为 `financial_data_missing`。
+- 港股扩展池目前只有映射层，尚未把 `$global-stock-data` 行情/财务/新闻字段消费进策略二B。
+
 ## 1. 审查结论
 
 原 `improements.md` 的方向大体正确，但存在三类问题：
 
 1. **重复已完成工作**：PE/PB 多窗口分位、新闻数、AI 概念识别、研报覆盖度、screen_runs 快照等已在 README 标注完成，不应继续列为待做主线。
-2. **数据基础不足**：研报数量、人工标签、策略二医药专属结构化数据都不足，直接做 claim 抽取或细分行业阈值会变成设计文档。
-3. **优先级错位**：当前最该先做的是修 bug、补观测、扩数据、建 ground truth，而不是继续叠加字段和数据源。
+2. **数据基础不足**：当时研报、人工标签、策略二医药专属结构化数据都不足；目前研报数量已补到 P0 门槛，瓶颈转为人工标签和医药 ground truth。
+3. **优先级错位**：当前最该先做的是让 P0 审计全绿、修解析难例、补 ground truth，而不是继续叠加字段和数据源。
 
 最终规划应从“加法思维”改为“证据链思维”：
 
@@ -36,7 +59,7 @@
 
 - **先修确定 bug，再做策略扩张。**
 - **先建覆盖率报表，再解释命中结果。**
-- **先扩研报和 ground truth，再做结构化 claim 抽取。**
+- **先用已扩充研报和 ground truth 校准证据链，再做结构化 claim 抽取。**
 - **优先结构化数据源，文本 NLP 只做辅助证据。**
 - **不要把没有消费场景的字段提前入库。**
 
@@ -44,14 +67,14 @@
 
 | 建议类型 | 处理 | 原因 |
 |---|---|---|
-| `compute_risk_penalty` early return bug | 保留，P0 | 真实代码缺陷，影响评分风险项叠加 |
-| 缺失指标权重重归一问题 | 保留，P0 | 信息少的公司可能被抬高分数 |
-| 数据覆盖率报表 | 保留，P0 | 是解释命中数和缺失原因的前提 |
-| `hot_reason_count_30d` / `relative_return_60d` | 保留，P0 | README 明确是占位，直接影响策略三“被忽视”证据 |
-| 日志系统缺失 | 保留，P0 | 没有日志，数据血缘和覆盖率也难以观测 |
-| 扩研报数据基础 | 保留，P0 | 3 份研报不足以支撑 RAG/claim 抽取 |
-| 人工标签机制 | 保留，P0 | 没有 hit/watch/false_positive，阈值调整无依据 |
-| 消费子行业差异化阈值 | 暂缓 | 当前策略一命中仅 4 只，样本不足，过拟合风险高 |
+| `compute_risk_penalty` early return bug | 已完成，保留回归测试 | `parse_warning`、现金流、负债风险已累加并封顶 |
+| 缺失指标权重重归一问题 | 已完成，保留回归测试 | 缺失子分按中性值处理，并输出 `coverage_ratio` |
+| 数据覆盖率报表 | 已完成基础版，继续强化 | `screen_runs.coverage_json` 与 run 目录 `coverage.md` 已落地，后续补字段级解释质量 |
+| `hot_reason_count_30d` / `relative_return_60d` | 已完成基础实现 | `NeglectEvidenceCollector` 已提供热点频次和 60 日相对收益，后续验证真实样本稳定性 |
+| 日志系统缺失 | 主要流水线已完成，legacy 收尾 | 核心 P0/P2 pipeline 已接入 `src.utils.logging`，少量旧脚本继续收敛 |
+| 扩研报数据基础 | 已达 P0 数量门槛 | 当前已有 263 条研报元数据、205 份本地 PDF 元数据、219 个 PDF 文件、2502 个 RAG chunks |
+| 人工标签机制 | 工具已完成，标签待回写 | `label-export` / `label-import` 已落地，下一步标注最新 7 只 hit/watch |
+| 消费子行业差异化阈值 | 暂缓 | 当前策略一有效样本不足，且最新 run 主要卡在 `pe_history_missing`，先补历史估值 |
 | 行业内分位排序 | 暂缓 | 需要 peer metrics 物化视图，且应先有 reject 分布 |
 | PDF 7 步解析流水线 | 降级 | 先做 golden case + F10 fallback，避免低 ROI 重构 |
 | 字段 `raw_hash` / 入库 `is_stale` | 暂缓 | 没有明确消费者，先不做死字段 |
@@ -62,8 +85,8 @@
 | §11 覆盖率字段级定义 | 采纳 | 覆盖率明确为字段级，而不是行级 |
 | §11 策略二A PB 分位不应盲删 | 采纳并修正 | PB 分位改为策略二A 软约束 |
 | §11 策略二B A 股边界 | 修正 | 新增 `$global-stock-data` 后，MVP 可覆盖 A 股 + 港股行情/财务/新闻/资金对照，但港交所公告全文仍暂缓 |
-| §11 暂缓项退出条件 | 采纳 | `10.4` 增加启动 / 退出暂缓条件 |
-| `import_overseas_revenue.py` 输出缓冲 | 采纳，P0 | 纳入 `7.4` 和 `10.1` |
+| §11 暂缓项退出条件 | 采纳 | `10.5` 增加启动 / 退出暂缓条件 |
+| `import_overseas_revenue.py` 输出缓冲 | 已完成 | 脚本已接入 logger，后续只需收敛少量 legacy 输出 |
 | 港股数据源能力 | 采纳 | 使用 `$global-stock-data` 覆盖港股行情、K线、三表、关键指标、分析师、新闻、资金流和全市场列表 |
 
 ### 3.1 对 review 的反驳与保留判断
@@ -91,7 +114,7 @@
 
 下一步不应先做复杂行业模板，而应先回答：
 
-> 当前为什么只命中 4 只？是数据缺失、阈值过严，还是确实没有更多合格样本？
+> 当前为什么有效命中少？最新 run 是数据缺失、阈值过严，还是确实没有更多合格样本？
 
 ### 4.2 保留改进
 
@@ -118,7 +141,7 @@ P1 优先加入低成本、高解释性的质量过滤：
 - 行业内分位排序。
 - 针对家电、美妆、纺服、社服等单独配置模板。
 
-理由：当前样本太少，直接拆阈值会过拟合。正确前置是先补数据覆盖率、reject 分布和人工标签。
+理由：当前样本太少，且最新 run 主要暴露的是历史估值缺口。正确前置是先补 PE/PB 历史分位、数据覆盖率、reject 分布和人工标签。
 
 ## 5. 策略二：医药策略重构
 
@@ -273,12 +296,16 @@ MVP 边界：
 
 ### 6.1 保留改进
 
-真正需要优先补的是两个占位项：
+两个“被忽视”核心观测项已经完成基础实现：
 
 - `hot_reason_count_30d`。
 - `relative_return_60d`。
 
-这两个字段补齐后，策略三的“被忽视”证据链才完整。
+下一步不再重复开发字段，而是验证三件事：
+
+1. 最新 `hit/watch` 样本中，这两个字段是否能解释“被市场忽视”。
+2. 同花顺热点缓存是否能稳定覆盖财报季候选。
+3. 60 日相对收益的基准选择是否需要按行业替代宽基指数。
 
 ### 6.2 海外收入同比守卫
 
@@ -298,7 +325,7 @@ MVP 边界：
 - 关税和汇率风险结构化。
 - 产能、订单、客户认证 claim 抽取。
 
-这些应等研报扩容到 200 篇以上，并完成 claim 抽取基础设施后再做。
+研报数量已经达到 P0 门槛，但这些字段仍应等人工标签、候选级证据去重和 claim 抽取基础设施完成后再做。
 
 ## 7. 数据源与数据治理
 
@@ -403,15 +430,15 @@ TTL 分类：
 
 ### 7.4 已知工程债纳入数据治理
 
-P0 需要补入一个小但影响使用体验的问题：
+已处理：
 
-- `scripts/import_overseas_revenue.py` 在不带 `-u` 时输出被 pipe 缓冲，看不到实时进度。
+- `scripts/import_overseas_revenue.py` 已接入项目 logger，进度输出不再依赖 `python -u`。
+- 核心 P0/P2 pipeline 已统一使用 `src.utils.logging.configure_logging`。
 
-处理建议：
+仍需收尾：
 
-- 在 README 和 CLI 帮助中提示 `python3 -u scripts/import_overseas_revenue.py`。
-- 或在脚本内对关键进度输出使用 `flush=True`。
-- 后续 logging 接入后统一由 logger 处理进度和错误。
+- 少量 legacy 脚本仍有 `print`，不影响主流程，但后续清理时应统一 logger。
+- 数据下载失败时应尽量输出 `source_status` 和可重试命令，减少人工排查成本。
 
 ## 8. 财报与研报解析
 
@@ -430,18 +457,20 @@ P0 需要补入一个小但影响使用体验的问题：
 
 ### 8.2 研报数据
 
-当前最大问题不是 RAG 不够聪明，而是研报量不足。
+研报 P0 数量门槛已经达到，下一步从“多拉研报”转为“让研报真正服务候选解释”。
 
-前置目标：
+已完成：
 
-- 覆盖策略三 15 只命中 + 50 只扩展池。
-- 研报数量提升到 200 篇以上。
-- PDF 下载、RAG ingest、broker_reports 入库三者一致。
+- `broker_reports=263`。
+- 本地 PDF 元数据 `205`。
+- `research_reports/` 下 PDF 文件 `219`。
+- RAG chunks `2502`。
 
-达到数据量后再做：
+下一步：
 
-- 内容 hash 去重。
-- chunk 保存章节标题。
+- 对最新 7 只 `hit/watch` 建证据包并人工标注。
+- 检查 `001231` 等无研报候选是否应保留 watch 或降权。
+- 对同一公司重复 PDF / 重复观点做候选级去重，避免 RAG 证据被单家公司研报数量放大。
 - EPS Y1/Y2 口径标准化。
 - 结构化 claim 抽取。
 
@@ -455,11 +484,11 @@ P0 需要补入一个小但影响使用体验的问题：
 
 ### 9.1 必修评分问题
 
-P0 修复：
+已完成：
 
-- `compute_risk_penalty` 中 `parse_warning` early return，改为和债务/现金流风险累加。
-- 缺失子分不应让剩余权重无条件重归一。
-- `ScoreMetrics` 增加或显式输出 `coverage_ratio`。
+- `compute_risk_penalty` 中 `parse_warning` 已和债务/现金流风险累加。
+- 缺失子分按中性值处理，不再把信息少的公司无条件抬高。
+- `ScoreMetrics` 已输出 `coverage_ratio`。
 
 建议评分语义：
 
@@ -468,6 +497,11 @@ P0 修复：
 - `risk_penalty`：风险扣分。
 - `reject_reason`：硬过滤原因。
 - `watch_reason`：降级观察原因。
+
+仍需修正：
+
+- 策略三中负 PE、估值异常或估值快照不可用，不应统一写成 `financial_data_missing`，需要拆出 `valuation_data_missing` / `pe_ttm_invalid`。
+- 策略一 `pe_history_missing` 是真实历史估值缺口，不能用腾讯当前快照伪造历史分位。
 
 ### 9.2 人工标签
 
@@ -479,11 +513,16 @@ P0 修复：
 - `label_reason`。
 - `labeled_at`。
 
-先标注当前 19 只命中作为基线，再讨论阈值和模型。
+先标注最新 run 的 7 只 `hit/watch` 作为基线，再回溯历史命中样本。标注前优先阅读 `data/exports/latest_candidate_evidence.md`，避免只看分数打标签。
 
 ### 9.3 回测
 
-P2 做：
+基础入口已完成：
+
+- 20/60/120 日前瞻收益回测。
+- 下一期财务验证。
+
+下一步用真实标签校准：
 
 - 20/60/120 日相对行业收益。
 - 最大回撤。
@@ -491,53 +530,54 @@ P2 做：
 - 研报覆盖度变化。
 - 热点/新闻关注变化。
 
-没有人工标签和覆盖率报表前，不应过早讨论复杂回测框架。
+没有人工标签前，不应把回测结果直接用于调阈值；先做观察和误差归因。
 
 ## 10. 执行计划
 
-### 10.1 P0：先修基础闭环（3-4 周）
+### 10.1 已完成基线（截至 2026-07-04）
 
-1. 修复 `compute_risk_penalty` early return bug。
-2. 修复评分缺失项重归一问题，增加 `coverage_ratio`。
-3. 建数据覆盖率报表，写入 `screen_runs.coverage_json`。
-4. 补 `hot_reason_count_30d`。
-5. 补 `relative_return_60d`。
-6. 引入 `logging`，替换主要 `print`。
-7. 批量扩研报数据，目标 200 篇以上。
-8. 增加人工标签字段，先标注当前策略一/策略三命中样本。
-9. 建策略二医药行业池。
-10. 编写 ground truth 标注 rule book。
-11. 建策略二 ground truth CSV，至少 30 只历史样本。
-12. 修复或规避 `import_overseas_revenue.py` 输出缓冲问题。
-13. 建 A 股/港股/A+H 代码映射规则，明确 `HK_code`、`Yahoo_symbol`、`SECUCODE`、`secid_prefix`。
+1. 评分层：`risk_penalty` 累加、缺失子分中性填充、`coverage_ratio` 已完成。
+2. 覆盖率：`screen_runs.coverage_json`、run 目录 `coverage.md` 已完成。
+3. 策略三忽视度：`hot_reason_count_30d`、`relative_return_60d` 已完成基础实现。
+4. 日志：核心 P0/P2 pipeline 已接入 `src.utils.logging`。
+5. 研报：P0 数量门槛已达，当前 263 条元数据、205 份本地 PDF 元数据、219 个 PDF 文件、2502 个 RAG chunks。
+6. 人工标签工具：`label-export` / `label-import` 已完成，最新队列已导出。
+7. 策略二A 工程：医药模板、VBP 事件导入、ground truth 校验、`pharma-screen` 已完成。
+8. A/H 映射：`global-map`、`global_stock_mappings` 表、首批 5 条映射已完成。
+9. P2 验证：20/60/120 日前瞻收益回测、下一期财务验证、RAG 去重和章节标题已完成。
+10. `$a-stock-data` 补数：`refresh-skill` 已完成，最新缺失池补数和 2026Q1 PDF 下载已跑通。
 
-### 10.2 P1：策略增强与关键数据源（5-7 周）
+### 10.2 P0 收尾：让审计全 OK
 
-1. 策略一 port 现金流/净利润过滤。
-2. 策略一新增应收、存货、销售费用率计算，但先只作为 watch/reject_reason 输出。
-3. 策略三打开海外收入同比守卫：有 2 年数据则强校验，否则降置信度。
-4. 标准化东财研报 EPS Y1/Y2 到具体年份。
-5. 建海外收入 golden PDF 测试集。
-6. PDF 解析失败时 fallback F10 主营构成。
-7. 增加必要表的 `fetched_at`，实现缓存 TTL。
-8. 策略二接入联采办/上海阳光医药采购网中标数据。
-9. 策略二接入 CDE/FDA/ClinicalTrials 基础数据。
-10. 接入 `$global-stock-data` 港股 adapter：行情、K线、三表、关键指标、分析师、新闻、资金流。
-11. 实现策略二A 集采修复型 MVP。
-12. 实现策略二B 创新药/创新器械出海型 MVP，含港股扩展池和 A+H 对照。
+1. 标注最新 7 只 `hit/watch`：阅读 `data/exports/latest_candidate_evidence.md`，填写 `data/exports/human_label_queue.csv` 的 `human_label` / `label_reason`，再执行 `label-import`。
+2. 修正策略三原因码：把负 PE、估值快照异常、估值历史不足拆成 `pe_ttm_invalid`、`valuation_data_missing`、`pe_history_missing`，不要继续混入 `financial_data_missing`。
+3. 固化海外收入难例：把 `001288`、`002145`、`001311`、`002085` 加入 golden case，明确预期海外收入、失败类型和复核结论。
+4. 补策略二 VBP 事件：填写 `data/exports/pharma_vbp_events.csv`，每条必须有 `source_url` 和 `evidence_text`。
+5. 补策略二 ground truth：至少 30 条 `data/exports/pharma_vbp_ground_truth.csv`，按 `docs/pharma_ground_truth_rulebook.md` 标注。
+6. 重跑 `p0-audit --period 2025A --strategy all`，目标是只剩真实外部数据缺口，最好达到全 OK。
+7. 更新 `README.md` 的交接快照：把 P0 audit 状态、最新 run id、剩余 TODO 同步给下一轮工具。
 
-### 10.3 P2：验证与结构化研究（4-8 周）
+### 10.3 P1：策略质量与数据源增强
 
-1. 建 20/60/120 日相对收益回测。
-2. 建下一期财务验证。
-3. 研报内容 hash 去重。
-4. RAG chunk 增加章节标题。
-5. 基于 200 篇以上研报做结构化 claim 抽取。
-6. 根据人工标签和回测结果校准阈值。
-7. 评估是否需要消费子行业差异化阈值。
-8. 评估是否需要行业内 peer metrics 分位。
+1. 策略一历史估值：补真实 PE/PB 历史序列来源，解决当前 12 只消费候选 `pe_history_missing`，不能用腾讯当前快照替代历史分位。
+2. 策略一财务质量：在现有经营现金流和扣非质量基础上，增加应收账款、存货、销售费用率，先作为 watch/reject reason 输出。
+3. 策略三海外收入 fallback：PDF 解析失败时接东财 F10 / mootdx F10 主营构成，降低 `overseas_revenue_missing`。
+4. 策略三研报证据：对无研报候选降权或标记 `research_evidence_missing`，避免“无证据 watch”混入高优先级。
+5. EPS 年份标准化：把东财研报 EPS Y1/Y2 转成具体财年，减少与同花顺一致预期的跨年偏差。
+6. 缓存 TTL：为必要表补 `fetched_at` 消费逻辑，优先在读取时判断过期，不急于新增 `is_stale` 字段。
+7. `$global-stock-data` 港股 adapter：先消费港股行情、K线、三表、关键指标、分析师、新闻、资金流，输出 A/H 对照字段。
+8. 策略二B MVP：以 A 股主池 + 港股扩展池 + A/H 对照方式输出研究线索，并显式标记 `hk_disclosure_source_gap`。
 
-### 10.4 暂缓 / 删除
+### 10.4 P2：验证、校准与结构化研究
+
+1. 用人工标签和前瞻收益回测校准策略一/策略三阈值。
+2. 用下一期财务验证校准“高增是否兑现”，重点看扣非净利、收入、现金流。
+3. 在 200 篇以上研报基础上做轻量 claim 抽取，先抽海外订单、产能、客户、License-out、FDA/CDE 进展。
+4. 建候选级证据去重：同一公司多篇研报重复观点不能线性放大置信度。
+5. 评估消费子行业差异化阈值：只有当 watch pool 和人工标签样本足够时再拆行业模板。
+6. 评估 peer metrics：确认绝对阈值误杀明显后，再做行业内分位排序。
+
+### 10.5 暂缓 / 删除
 
 | 事项 | 处理原因 | 启动 / 退出暂缓条件 |
 |---|---|---|
@@ -618,14 +658,15 @@ P2 做：
 
 ## 12. 最小可交付目标
 
-下一阶段的成功标准不是“新增了多少指标”，而是：
+下一阶段的成功标准不是“新增了多少指标”，而是把证据闭环真正跑通：
 
-1. 每次 screen 都能看到覆盖率和缺失原因。
-2. 每个候选都有 score、coverage_ratio、risk_penalty、reject/watch reason。
-3. 策略三的忽视度证据不再有占位字段。
-4. 当前命中样本有人工标签。
-5. 研报数据达到可支撑 RAG 的规模。
-6. 策略二有医药行业池、ground truth 和至少一个结构化医药专属数据源。
-7. 策略二B 能输出港股扩展池和 A+H 对照字段，并明确标记 `hk_disclosure_source_gap`。
+1. 已完成：每次 screen 都能看到覆盖率和缺失原因。
+2. 已完成：每个候选都有 score、coverage_ratio、risk_penalty、reject/watch reason。
+3. 已完成：策略三的忽视度证据不再是占位字段。
+4. 已完成：研报数据达到可支撑 RAG 的 P0 规模。
+5. 已完成：策略二有医药行业池、工程入口、ground truth rule book 和 A/H 映射前置。
+6. P0 收尾：最新命中样本有人工标签。
+7. P0 收尾：策略二有至少 30 条 ground truth 和真实 VBP 结构化事件。
+8. P1 后续：策略二B 能输出港股扩展池和 A/H 对照字段，并明确标记 `hk_disclosure_source_gap`。
 
 做到这些后，再继续加阈值、加 claim、加行业模板才有意义。
