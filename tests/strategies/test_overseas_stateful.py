@@ -121,6 +121,42 @@ class TestEvaluateOverseasFull:
         assert results[0].status == Status.DATA_MISSING
         assert results[0].data_missing_reason == "financial_data_missing"
 
+    def test_valuation_data_missing_when_pe_history_empty(
+        self, store_with_overseas, base_candidates, hit_config
+    ):
+        source = MockSource(pd.DataFrame(), _fin_with_revenue())
+        results = evaluate_overseas_full(
+            source=source, store=store_with_overseas,
+            candidates=base_candidates, run_id="r1", period="2025A",
+            show_progress=False, config=hit_config, sina_source=None,
+        )
+        r = results[0]
+        assert r.status == Status.DATA_MISSING
+        assert r.data_missing_reason == "valuation_data_missing"
+        assert r.metrics.source_status.valuation == "missing"
+        assert (
+            r.metrics.source_status.extra["valuation_missing_reason"]
+            == "valuation_data_missing"
+        )
+
+    def test_pe_ttm_invalid_when_latest_pe_non_positive(
+        self, store_with_overseas, base_candidates, hit_config
+    ):
+        source = MockSource(_pe_history_low(current=-1.0), _fin_with_revenue())
+        results = evaluate_overseas_full(
+            source=source, store=store_with_overseas,
+            candidates=base_candidates, run_id="r1", period="2025A",
+            show_progress=False, config=hit_config, sina_source=None,
+        )
+        r = results[0]
+        assert r.status == Status.DATA_MISSING
+        assert r.data_missing_reason == "pe_ttm_invalid"
+        assert r.metrics.source_status.valuation == "missing"
+        assert (
+            r.metrics.source_status.extra["valuation_missing_reason"]
+            == "pe_ttm_invalid"
+        )
+
     def test_overseas_ratio_too_low_rejected(
         self, store_with_overseas, base_candidates, hit_config
     ):
@@ -510,6 +546,39 @@ class TestP152RatioCheckFromCandidatesJson:
             assert r.watch_reason == "parse_warning"
             assert r.metrics.overseas.overseas_revenue_yi == pytest.approx(30.0, abs=0.1)
             assert r.metrics.overseas.overseas_ratio == pytest.approx(0.3, abs=0.01)
+            assert "candidate_chose_from_json" in (r.metrics.overseas.parse_warning or "")
+        finally:
+            store.close()
+
+    def test_low_ratio_best_fallbacks_to_larger_plausible_candidate(
+        self, tmp_path: Path, base_candidates, hit_config
+    ):
+        """best 误选小区域行且 ratio 低于策略阈值时，应尝试 candidates_json 兜底。"""
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+        cands = _candidates_json([
+            {"region_name": "境外-小区域", "revenue": 1.5, "revenue_unit": "亿元",
+             "revenue_yuan": 1.5e8, "is_total_row": False, "confidence": "high"},
+            {"region_name": "境外-主区域", "revenue": 7.0, "revenue_unit": "亿元",
+             "revenue_yuan": 7.0e8, "is_total_row": False, "confidence": "high"},
+        ])
+        store.save_overseas_revenue([{
+            "stock_code": "600031", "report_year": 2025, "region_name": "境外-小区域",
+            "revenue": 1.5, "revenue_unit": "亿元",
+            "source_page": 1, "raw_text": "", "pdf_path": "",
+            "candidates_json": cands, "parse_warning": None, "confidence": "high",
+        }])
+        source = MockSource(_pe_history_low(current=20.0), _fin_with_revenue(revenue=1e9))
+        try:
+            results = evaluate_overseas_full(
+                source=source, store=store, candidates=base_candidates,
+                run_id="r1", period="2025A", show_progress=False,
+                config=hit_config, sina_source=None,
+            )
+            r = results[0]
+            assert r.status == Status.WATCH
+            assert r.watch_reason == "parse_warning"
+            assert r.metrics.overseas.overseas_revenue_yi == pytest.approx(7.0, abs=0.1)
+            assert r.metrics.overseas.overseas_ratio == pytest.approx(0.7, abs=0.01)
             assert "candidate_chose_from_json" in (r.metrics.overseas.parse_warning or "")
         finally:
             store.close()

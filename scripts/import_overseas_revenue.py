@@ -16,6 +16,7 @@ P1-3 不在这里做 ratio 校验（海外收入 / 总营收）；
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -27,9 +28,11 @@ import pandas as pd
 
 from src.collectors.annual_report_parser import (
     OverseasRevenueRecord,
+    ParseResult,
     parse_annual_report,
     select_best_record,
 )
+from src.collectors.f10_overseas_revenue import fetch_mootdx_f10_overseas_revenue
 from src.config import config
 from src.storage import DuckDBStore
 from src.utils.logging import configure_logging
@@ -56,6 +59,33 @@ def _record_to_candidate_dict(r: OverseasRevenueRecord) -> dict:
         "is_total_row": r.is_total_row,
         "confidence": r.confidence,
     }
+
+
+def _parse_report_with_fallback(
+    pdf_path: Path,
+    *,
+    code: str,
+    year: int,
+    enable_f10_fallback: bool = True,
+) -> ParseResult:
+    """Parse PDF first; if it fails, try mootdx F10 as a best-effort fallback."""
+    result = parse_annual_report(pdf_path, stock_code=code)
+    if result.success or not enable_f10_fallback:
+        return result
+
+    fallback = fetch_mootdx_f10_overseas_revenue(code, report_year=year)
+    if fallback.success:
+        fallback.parse_warnings.insert(
+            0,
+            f"pdf_parser_failed_then_f10_fallback:{result.error[:80]}",
+        )
+        return fallback
+
+    result.error = (
+        f"{result.error}; f10_fallback_failed={fallback.error}"
+        if result.error else f"f10_fallback_failed={fallback.error}"
+    )
+    return result
 
 
 def _cross_year_check(
@@ -101,7 +131,7 @@ def _load_history_from_store(store: DuckDBStore) -> dict[str, dict[int, float]]:
     return history
 
 
-def main(year: int = 2024) -> int:
+def main(year: int = 2024, *, enable_f10_fallback: bool = True) -> int:
     pdf_dir = config.ANNUAL_REPORT_PDF_DIR
     _log(f"扫描目录: {pdf_dir}")
     # canonical: _annual_report.pdf；legacy: _annual.pdf（旧下载器产出）
@@ -127,7 +157,12 @@ def main(year: int = 2024) -> int:
     for pdf_path in pdfs:
         code = pdf_path.stem.split("_")[0]
         try:
-            result = parse_annual_report(pdf_path, stock_code=code)
+            result = _parse_report_with_fallback(
+                pdf_path,
+                code=code,
+                year=year,
+                enable_f10_fallback=enable_f10_fallback,
+            )
             if not result.success:
                 parse_failures.append((code, result.error))
                 _log(f"  ✗ {code} 解析失败: {result.error}")
@@ -153,7 +188,7 @@ def main(year: int = 2024) -> int:
                 "revenue_unit": best.revenue_unit,
                 "source_page": best.source_page,
                 "raw_text": best.raw_text,
-                "pdf_path": str(pdf_path),
+                "pdf_path": result.pdf_path if result.pdf_path.startswith("mootdx_f10:") else str(pdf_path),
                 "candidates_json": candidates_json,
                 "parse_warning": parse_warning_str,
                 "confidence": best.confidence,
@@ -232,5 +267,12 @@ def main(year: int = 2024) -> int:
 
 
 if __name__ == "__main__":
-    year = int(sys.argv[1]) if len(sys.argv) > 1 else 2024
-    sys.exit(main(year))
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("year", type=int, nargs="?", default=2024)
+    parser.add_argument(
+        "--skip-f10-fallback",
+        action="store_true",
+        help="PDF 解析失败时不尝试 mootdx F10 主营构成 fallback",
+    )
+    args = parser.parse_args()
+    sys.exit(main(args.year, enable_f10_fallback=not args.skip_f10_fallback))

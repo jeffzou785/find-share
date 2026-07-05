@@ -223,3 +223,31 @@ class TestParseRevenueFromRow:
         v, unit = _parse_revenue_from_row(["境外", "12.5 亿元"], "元")
         assert v == 12.5
         assert unit == "亿元"
+
+    def test_volume_ton_not_parsed_as_ten_thousand_yuan(self):
+        v, unit = _parse_revenue_from_row(
+            [
+                "国外",
+                "销售钛白粉48.45万吨，同比增长13.08%，其中国内销售金额占比56.43%，"
+                "国外销售金额占比43.57%。",
+            ],
+            "万元",
+        )
+        assert v is None
+        assert unit == "万元"
+
+    def test_export_volume_not_parsed_as_hundred_million_yuan(self):
+        v, unit = _parse_revenue_from_row(
+            "铁矿年出口量最高可达1.2亿吨，作为项目参建单位之一。",
+            "元",
+        )
+        assert v is None
+        assert unit == "元"
+
+    def test_current_year_zero_does_not_fallback_to_previous_year_amount(self):
+        v, unit = _parse_revenue_from_row(
+            ["境外-亚洲", "0.00", "0.00%", "74,518,432.00", "4.87%", "-100.00%"],
+            "元",
+        )
+        assert v is None
+        assert unit == "元"

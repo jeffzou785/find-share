@@ -5,6 +5,11 @@ from .cached_impl import LocalCachedSource  # noqa: F401
 from .neglect_evidence import NeglectEvidenceCollector  # noqa: F401
 from .sina_impl import SinaFinancialSource  # noqa: F401
 from .eastmoney_research import EastMoneyResearchSource  # noqa: F401
+from .f10_overseas_revenue import (  # noqa: F401
+    fetch_mootdx_f10_overseas_revenue,
+    parse_f10_overseas_records,
+    parse_f10_overseas_revenue,
+)
 from .ths_forecast import ThsForecastSource  # noqa: F401
 from .tushare_impl import TushareSource  # noqa: F401
 from .global_stock_mapping import (  # noqa: F401

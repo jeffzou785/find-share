@@ -55,14 +55,12 @@ class TestReasonCodes:
     def test_overseas_reject_codes_complete(self):
         expected = {
             "not_target_manufacturing_industry",
-            "overseas_revenue_missing",
             "overseas_ratio_too_low",
             "overseas_ratio_abnormal",
             "overseas_yoy_abnormal",
             "pe_ttm_too_high",
             "cashflow_quality_failed",
             "debt_ratio_too_high",
-            "financial_data_missing",
         }
         assert REJECT_OVERSEAS == expected
 
@@ -74,6 +72,10 @@ class TestReasonCodes:
     def test_data_missing_reasons_include_pdf(self):
         assert "pdf_not_downloaded" in DATA_MISSING_REASONS
         assert "pe_history_empty" in DATA_MISSING_REASONS
+        assert "valuation_data_missing" in DATA_MISSING_REASONS
+        assert "pe_ttm_invalid" in DATA_MISSING_REASONS
+        assert "financial_data_missing" in DATA_MISSING_REASONS
+        assert "overseas_revenue_missing" in DATA_MISSING_REASONS
 
     def test_validate_reason_codes_returns_all(self):
         v = validate_reason_codes()

@@ -60,14 +60,12 @@ REJECT_CONSUMER = {
 # === 策略三 reject_reason ===
 REJECT_OVERSEAS = {
     "not_target_manufacturing_industry",
-    "overseas_revenue_missing",
     "overseas_ratio_too_low",
     "overseas_ratio_abnormal",
     "overseas_yoy_abnormal",
     "pe_ttm_too_high",
     "cashflow_quality_failed",
     "debt_ratio_too_high",
-    "financial_data_missing",
 }
 
 # === watch_reason（两策略通用）===
@@ -84,8 +82,13 @@ WATCH_REASONS = {
 DATA_MISSING_REASONS = {
     "pdf_not_downloaded",
     "pe_history_empty",
+    "pe_history_missing",
+    "valuation_data_missing",
+    "pe_ttm_invalid",
     "financials_empty",
+    "financial_data_missing",
     "overseas_revenue_empty",
+    "overseas_revenue_missing",
     "disclosures_table_empty",
     "report_not_found",
 }

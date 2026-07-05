@@ -322,12 +322,12 @@ def _parse_revenue_from_row(row_text_or_list, page_unit: str = "元") -> tuple[O
     else:
         text = str(row_text_or_list)
 
-    # 单位识别
-    if "亿元" in text or "亿" in text:
+    # 单位识别：只把明确的金额单位当作货币。不要把"亿吨/万吨"等数量单位误判为收入。
+    if "亿元" in text:
         unit = "亿元"
-    elif "百万元" in text or "百万" in text:
+    elif "百万元" in text:
         unit = "百万"
-    elif "千万元" in text or "万元" in text or "万" in text:
+    elif "千万元" in text or "万元" in text:
         unit = "万元"
     elif "千元" in text or "千元)" in text:
         unit = "千元"
@@ -335,12 +335,17 @@ def _parse_revenue_from_row(row_text_or_list, page_unit: str = "元") -> tuple[O
         # 没行内单位提示时，用页面单位
         unit = page_unit
 
+    non_money_units = (
+        "亿吨", "万吨", "吨", "万股", "亿股", "股", "万辆", "万台", "万件",
+        "万套", "万人", "公里", "千米", "美元", "万美", "亿美元",
+    )
+
     # 数字提取：找金额（含千分位逗号或小数）
     # 排除：年份（19xx/20xx）、百分比、小整数
-    candidates = re.findall(
+    candidates = list(re.finditer(
         r"(?<!\d)(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d+|\d{4,})(?!\d|%|\.\d)",
         text,
-    )
+    ))
     # 最小金额阈值随单位调整：亿元单位下 0.01 亿（1 百万元）也算合法
     min_value_by_unit = {
         "元": 100.0,
@@ -350,8 +355,12 @@ def _parse_revenue_from_row(row_text_or_list, page_unit: str = "元") -> tuple[O
         "亿元": 0.01,       # 0.01 亿元 = 100 万元
     }
     min_value = min_value_by_unit.get(unit, 100.0)
-    for c in candidates:
+    for match in candidates:
+        c = match.group(1)
         if re.fullmatch(r"(19|20)\d{2}", c):
+            continue
+        following = text[match.end(): match.end() + 4]
+        if any(following.startswith(unit_text) for unit_text in non_money_units):
             continue
         try:
             v = float(c.replace(",", ""))
@@ -359,6 +368,10 @@ def _parse_revenue_from_row(row_text_or_list, page_unit: str = "元") -> tuple[O
             continue
         # 过滤掉极小数（行号、百分比残留）
         if v < min_value:
+            # 分地区表常见形态：当前年金额为 0.00，后面跟占比和上年金额。
+            # 此时不能继续向后抓上年金额冒充当前年境外收入。
+            if v == 0 and "%" in text[match.end(): match.end() + 12]:
+                return None, unit
             continue
         return v, unit
 

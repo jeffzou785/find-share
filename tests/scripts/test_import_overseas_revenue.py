@@ -29,10 +29,11 @@ _spec.loader.exec_module(_mod)
 _cross_year_check = _mod._cross_year_check
 _load_history_from_store = _mod._load_history_from_store
 _log = _mod._log
+_parse_report_with_fallback = _mod._parse_report_with_fallback
 _record_to_candidate_dict = _mod._record_to_candidate_dict
 CROSS_YEAR_FACTOR = _mod.CROSS_YEAR_FACTOR
 
-from src.collectors.annual_report_parser import OverseasRevenueRecord
+from src.collectors.annual_report_parser import OverseasRevenueRecord, ParseResult
 from src.storage import DuckDBStore
 
 
@@ -130,3 +131,74 @@ class TestRecordToCandidateDict:
         assert d["revenue_yuan"] == 12.5e8
         assert d["is_total_row"] is False
         assert d["confidence"] == "high"
+
+
+class TestParseReportWithFallback:
+    def test_pdf_success_skips_f10_fallback(self, tmp_path: Path, monkeypatch):
+        pdf = tmp_path / "001311_2025_annual_report.pdf"
+        pdf.write_bytes(b"%PDF")
+        pdf_result = ParseResult(
+            stock_code="001311",
+            pdf_path=str(pdf),
+            success=True,
+            records=[OverseasRevenueRecord(
+                stock_code="001311", report_period="2025年报",
+                region_name="境外", revenue=1.0, revenue_unit="亿元",
+                revenue_yuan=1e8,
+            )],
+        )
+        monkeypatch.setattr(_mod, "parse_annual_report", lambda *args, **kwargs: pdf_result)
+
+        def fail_fallback(*args, **kwargs):
+            raise AssertionError("fallback should not be called")
+
+        monkeypatch.setattr(_mod, "fetch_mootdx_f10_overseas_revenue", fail_fallback)
+        result = _parse_report_with_fallback(pdf, code="001311", year=2025)
+        assert result is pdf_result
+
+    def test_pdf_failure_uses_f10_fallback(self, tmp_path: Path, monkeypatch):
+        pdf = tmp_path / "001311_2025_annual_report.pdf"
+        pdf.write_bytes(b"%PDF")
+        pdf_result = ParseResult(
+            stock_code="001311",
+            pdf_path=str(pdf),
+            success=False,
+            error="PDF parser failed",
+        )
+        f10_result = ParseResult(
+            stock_code="001311",
+            pdf_path="mootdx_f10:001311:2025",
+            success=True,
+            records=[OverseasRevenueRecord(
+                stock_code="001311", report_period="2025年报",
+                region_name="境外", revenue=8.0, revenue_unit="亿元",
+                revenue_yuan=8e8,
+            )],
+            parse_warnings=["f10_fallback_used"],
+        )
+        monkeypatch.setattr(_mod, "parse_annual_report", lambda *args, **kwargs: pdf_result)
+        monkeypatch.setattr(
+            _mod,
+            "fetch_mootdx_f10_overseas_revenue",
+            lambda *args, **kwargs: f10_result,
+        )
+        result = _parse_report_with_fallback(pdf, code="001311", year=2025)
+        assert result is f10_result
+        assert result.pdf_path == "mootdx_f10:001311:2025"
+        assert result.parse_warnings[0].startswith("pdf_parser_failed_then_f10_fallback")
+
+    def test_pdf_failure_can_skip_f10_fallback(self, tmp_path: Path, monkeypatch):
+        pdf = tmp_path / "001311_2025_annual_report.pdf"
+        pdf.write_bytes(b"%PDF")
+        pdf_result = ParseResult(
+            stock_code="001311",
+            pdf_path=str(pdf),
+            success=False,
+            error="PDF parser failed",
+        )
+        monkeypatch.setattr(_mod, "parse_annual_report", lambda *args, **kwargs: pdf_result)
+        result = _parse_report_with_fallback(
+            pdf, code="001311", year=2025, enable_f10_fallback=False,
+        )
+        assert result is pdf_result
+        assert result.error == "PDF parser failed"

@@ -1,0 +1,7 @@
+code,name,year,pdf_path,expected_status,expected_best_yi_min,expected_best_yi_max,expected_preferred_yi_min,expected_preferred_yi_max,expected_error_contains,next_action
+001288,运机集团,2025,data/pdfs/annual_reports/001288_2025_annual_report.pdf,candidate_fallback_required,0.90,1.00,9.10,9.20,,Use candidates_json fallback to the Africa row before screening
+002145,钛能化学,2025,data/pdfs/annual_reports/002145_2025_annual_report.pdf,fixed,25.60,25.65,25.60,25.65,,Guard against parsing volume text such as 万吨 as revenue
+001311,多利科技,2024,data/pdfs/annual_reports/001311_2024_annual_report.pdf,parse_fail,,,,,找到附注但未提取到境外数据,Add F10 fallback or enhance table extraction
+001311,多利科技,2025,data/pdfs/annual_reports/001311_2025_annual_report.pdf,parse_fail,,,,,找到附注但未提取到境外数据,Add F10 fallback or enhance table extraction
+002085,万丰奥威,2024,data/pdfs/annual_reports/002085_2024_annual_report.pdf,parse_fail,,,,,找到附注但未提取到境外数据,Add F10 fallback or enhance table extraction
+002085,万丰奥威,2025,data/pdfs/annual_reports/002085_2025_annual_report.pdf,parse_fail,,,,,找到附注但未提取到境外数据,Add F10 fallback or enhance table extraction

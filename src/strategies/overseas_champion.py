@@ -432,12 +432,13 @@ def _evaluate_one_to_result(
         if overseas_revenue is not None and overseas_revenue > 0:
             overseas_ratio = overseas_revenue / revenue
 
-            # P1.5-2：策略层 ratio 校验。当 best 候选 ratio 异常（>0.95 或 <0.05）时，
-            # 尝试从 candidates_json 挑出 ratio 更合理的候选。
+            # P1.5-2：策略层 ratio 校验。当 best 候选 ratio 异常（>0.95）
+            # 或低于策略最低海外占比阈值时，尝试从 candidates_json 挑出更合理候选。
+            # 这能覆盖分地区表误选小区域行的情况，避免直接 rejected。
             if (
                 latest_year is not None
                 and (overseas_ratio >= RATIO_PLAUSIBLE_MAX
-                     or overseas_ratio < RATIO_PLAUSIBLE_MIN)
+                     or overseas_ratio < config.overseas_ratio_min)
             ):
                 meta_for_ratio = overseas_meta.get((code, latest_year), {})
                 cands = meta_for_ratio.get("candidates") or []
@@ -462,23 +463,26 @@ def _evaluate_one_to_result(
             pe_hist = source.get_pe_pb_history(code, years=5)
         except Exception:
             metrics.source_status.valuation = "error"
+            metrics.source_status.extra["valuation_missing_reason"] = "valuation_data_missing"
             return ScreeningResult.data_missing(
-                **common, data_missing_reason="financial_data_missing",
+                **common, data_missing_reason="valuation_data_missing",
                 metrics=metrics,
             )
 
         if pe_hist.empty:
             metrics.source_status.valuation = "missing"
+            metrics.source_status.extra["valuation_missing_reason"] = "valuation_data_missing"
             return ScreeningResult.data_missing(
-                **common, data_missing_reason="financial_data_missing",
+                **common, data_missing_reason="valuation_data_missing",
                 metrics=metrics,
             )
         latest_pe_row = pe_hist.sort_values("date").iloc[-1]
         pe_ttm = latest_pe_row.get("pe_ttm")
         if pd.isna(pe_ttm) or pe_ttm <= 0:
             metrics.source_status.valuation = "missing"
+            metrics.source_status.extra["valuation_missing_reason"] = "pe_ttm_invalid"
             return ScreeningResult.data_missing(
-                **common, data_missing_reason="financial_data_missing",
+                **common, data_missing_reason="pe_ttm_invalid",
                 metrics=metrics,
             )
 

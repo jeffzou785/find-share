@@ -95,7 +95,7 @@ jieba 分词 + TF-IDF + SQLite 实现的轻量 RAG（不依赖 chromadb，秒级
 
 - 回写最新 7 只 `hit/watch` 的 `human_label` / `label_reason`。
 - 补齐策略二医药 `pharma_vbp_events.csv` 和至少 30 条 `pharma_vbp_ground_truth.csv`。
-- 修正少数原因码与解析难例：策略三部分负 PE/估值异常目前会被归为 `financial_data_missing`；`001311`/`002085` 仍缺海外收入；`001288`、`002145` 的海外收入候选需要人工复核并沉淀 golden case。
+- 继续收尾海外收入解析难例：`002145` 的“万吨误判金额”已修；`001288` 已加入 golden case 并由 candidates_json 兜底；PDF 失败后的 mootdx F10 fallback 入口已接入，但 `001311`/`002085` 实跑 F10 文本为空，下一步应增强 PDF 表格解析或接其他主营构成源。
 
 推荐接手顺序：
 
@@ -285,6 +285,7 @@ python3 scripts/bootstrap_emweb_industry.py
 
 # 入库新下载的年报境外收入（P1.5-2：多 high 候选自动取合理值）
 python3 scripts/import_overseas_revenue.py
+python3 scripts/import_overseas_revenue.py 2025 --skip-f10-fallback  # 需要排查 PDF parser 时可关闭 F10 fallback
 
 # 重新跑策略三（新数据生效）
 python3 scripts/run_phase3_strategy3.py
@@ -352,6 +353,9 @@ python3 scripts/research_rag_cli.py search "宇通客车 海外订单" --stock 6
 | **策略二A 工程闭环 MVP**（2026-07-03）| 新增 `pharma-template` 初始化模板、`pharma-screen` 集采修复型筛选入口、`docs/pharma_ground_truth_rulebook.md` 标注规则；`stock_industry` 保留 `sw_second/em2016` 等行业增强列，筛选结果落 `screen_runs/candidate_scores` |
 | **策略二A PB软约束 + A/H映射闭环**（2026-07-03）| `pharma-screen` 读取本地 `pe_pb_history` 计算 PB 分位，超过软阈值只降级 watch；新增 `global-map`、`global_stock_mappings` 表和 P0 审计项，为策略二B港股扩展池/A+H 对照做前置 |
 | **P0 数据补齐与交接快照**（2026-07-04）| `refresh-skill` 补齐最新缺失池 32 只；最新 `screen` run 为 `20260704_112743_614f_2025A`；研报 PDF/RAG 达 P0 门槛（263 条元数据、205 份本地 PDF、219 个 PDF 文件、2502 个 RAG chunks）；A/H 映射已有 5 条；待完成最新 7 只人工标签、策略二 30 条 ground truth 与 VBP 事件 |
+| **策略三估值原因码拆分**（2026-07-04）| 负 PE/估值缺失不再归入 `financial_data_missing`；估值源缺失返回 `valuation_data_missing`，非正或空 PE-TTM 返回 `pe_ttm_invalid`，并写入 `source_status.extra.valuation_missing_reason` |
+| **海外收入 parser 难例第一轮**（2026-07-04）| 修复“万吨/亿吨”等数量单位被误判成收入；当前年 0.00 的分地区行不再回退抓上一年金额；策略三低占比 best 候选会尝试 candidates_json 兜底；新增 `tests/fixtures/overseas_revenue_golden_cases.csv` 跟踪 `001288`/`002145`/`001311`/`002085` |
+| **海外收入 F10 fallback 入口**（2026-07-04）| 新增 `f10_overseas_revenue.py`，PDF 解析失败时 `import_overseas_revenue.py` 默认尝试 mootdx F10 主营构成；无 mootdx/网络失败时保留原 PDF error，可用 `--skip-f10-fallback` 关闭；`001311`/`002085` 本机实跑 F10 文本为空 |
 
 ### P1 - ✅ 已完成（2026-06-27）
 
