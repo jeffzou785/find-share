@@ -93,6 +93,29 @@ class TestConfidence:
         assert records[0].region_name == "国际"
         assert records[0].confidence == "low"
 
+    def test_outbound_sales_keyword_is_treated_as_overseas(self):
+        rows = [["内销", "3,448,158,371.62"], ["外销", "143,861,752.14"]]
+        records = _extract_from_page(
+            [rows], "内销 外销 单位：元", page_num=1, page_unit="元"
+        )
+        assert len(records) == 1
+        assert records[0].region_name == "外销"
+        assert records[0].revenue_yuan == 143861752.14
+        assert records[0].confidence == "high"
+
+    def test_other_countries_and_regions_keyword_is_treated_as_overseas(self):
+        rows = [
+            ["中国大陆", "8,361,588,619.49"],
+            ["其他国家和地区", "7,625,585,408.18"],
+        ]
+        records = _extract_from_page(
+            [rows], "中国大陆 其他国家和地区 单位：元", page_num=1, page_unit="元"
+        )
+        assert len(records) == 1
+        assert records[0].region_name == "其他国家和地区"
+        assert records[0].revenue_yuan == 7625585408.18
+        assert records[0].confidence == "high"
+
 
 # === 跨页 \\n 修复 ===
 

@@ -7,7 +7,7 @@ A 股选股框架：基于公开数据的量化初筛 + 研报深度分析的两
 | 策略 | 逻辑 | 当前命中 |
 |------|------|---------|
 | **消费股反转** | 食品饮料/家电/美容护理/商贸零售/纺服/社会服务/轻工 + PE 分位<30%（**3y/5y/10y 可选**）+ 扣非同比>30% + **反转判定** + 经营质量过滤（现金流/扣非质量）| **4 只** |
-| **医药量价齐升** | 重构为二A“集采修复型”和二B“创新药/创新器械出海型”；二A MVP 已支持集采事件 + 财务修复 + PB 分位软约束，港股/A+H 映射可入库 | 工程闭环，数据待补齐 |
+| **医药量价齐升** | 重构为二A“集采修复型”和二B“创新药/创新器械出海型”；二A MVP 已支持集采事件 + 财务修复 + PB 分位软约束，港股/A+H 映射可入库 | P0 数据闭环完成，待实盘筛选校准 |
 | **出海隐形冠军** | 机械/汽车/化工 + 海外收入占比 30%~95% + PE<25 + **现金流/净利≥0.7** + **资产负债率<60%** + 海外同比>40%（连续两年数据可得时强制；单年降置信度）+ **被忽视证据链**（研报/新闻/概念聚合）| **15 只** + 50 只扩展池候选 |
 
 ## 功能模块
@@ -27,7 +27,7 @@ A 股选股框架：基于公开数据的量化初筛 + 研报深度分析的两
 | `em_get` | 东财统一限流（≥1s 间隔 + 随机抖动 + Session 复用 + 跳过 Clash 代理）| `_em_throttle.py` |
 | `CnInfoDownloader` | 从巨潮下载定期报告 PDF（年报/半年报/一季报/三季报四类通用）| `cninfo_downloader.py` |
 | `EmWebClient` | 东财 F10 拿全市场行业映射（5207/5527 = 94.2%）| `emweb_client.py` |
-| `annual_report_parser` | 年报 PDF 提取境外收入（单位识别 + 跨页去重 + 合理性校验 + **P1.5-2 多 high 候选取小值**）| `annual_report_parser.py` |
+| `annual_report_parser` | 年报 PDF 提取境外收入（单位识别 + 跨页去重 + 合理性校验 + **P1.5-2 多 high 候选取小值** + 外销/其他国家和地区口径）| `annual_report_parser.py` |
 | `DataSource` Protocol | 抽象层，未来切 Tushare 时业务代码零修改 | `base.py` |
 
 ### 存储层 `src/storage/`
@@ -75,7 +75,7 @@ jieba 分词 + TF-IDF + SQLite 实现的轻量 RAG（不依赖 chromadb，秒级
 - **P2-6 前瞻收益回测**（`backtest.py` + `scripts/backtest_forward_returns.py`）：对 `hit/watch` 候选计算 20/60/120 交易日绝对收益和可选基准相对收益，结果入 `backtest_results`
 - **P2-8 下一期财务验证**（`financial_validation.py` + `scripts/validate_next_financials.py`）：对 `hit/watch` 候选推导下一报告期，验证收入/净利同比是否继续兑现，结果入 `financial_validation_results`
 
-## 当前交接快照（2026-07-04）
+## 当前交接快照（2026-07-05）
 
 最近一轮财报季主 run：
 
@@ -84,18 +84,23 @@ jieba 分词 + TF-IDF + SQLite 实现的轻量 RAG（不依赖 chromadb，秒级
 - 状态：`partial_success`
 - 结果：策略三 `hit=1`（`001325 元创股份`）、`watch=6`（`000837`/`001207`/`001231`/`001239`/`001288`/`002145`）；策略一仍主要卡在 `pe_history_missing`
 - 交接文件：`data/exports/latest_candidate_evidence.md`、`data/exports/human_label_queue.csv`、`data/exports/p0_audit.md`
+- P0 审计：`python3 -m src.pipeline.cli p0-audit --period 2025A --strategy all` 已返回全 OK。
 
 已完成的数据补齐：
 
 - `$a-stock-data` 补数入口已覆盖最近缺失池：32 只股票财务/估值补齐成功，默认补 2024/2025 年报与 2026Q1，不补 2023。
 - 研报 P0 数量门槛已过：`broker_reports=263`，本地 PDF 元数据 `205`，`research_reports/` 下 PDF 文件 `219`，RAG chunks `2502`。
+- 最新 7 只 `hit/watch` 已回写 `human_label` / `label_reason`，`candidate_labels=7`，`hit_watch_unlabeled=0`。
+- 策略二 P0 样本已补齐：`pharma_vbp_events=8` 且均有 `source_url`/`evidence_text`，`pharma_vbp_ground_truth.csv` 30 条并通过校验。
+- 境外收入表当前 `overseas_revenue=155`（2024 年 81 条，2025 年 74 条）；`001311`/`002085` 已通过 PDF parser 解析入库，置信度 high、无 parse_warning。
 - A/H 映射已有第一批 5 条：药明康德、康龙化成、泰格医药、君实生物、百济神州，可供 `$global-stock-data` 港股扩展池继续接入。
 
-当前 P0 审计剩余 TODO：
+当前剩余主线：
 
-- 回写最新 7 只 `hit/watch` 的 `human_label` / `label_reason`。
-- 补齐策略二医药 `pharma_vbp_events.csv` 和至少 30 条 `pharma_vbp_ground_truth.csv`。
-- 继续收尾海外收入解析难例：`002145` 的“万吨误判金额”已修；`001288` 已加入 golden case 并由 candidates_json 兜底；PDF 失败后的 mootdx F10 fallback 入口已接入，但 `001311`/`002085` 实跑 F10 文本为空，下一步应增强 PDF 表格解析或接其他主营构成源。
+- P1：策略一真实历史 PE/PB 数据源仍是最大瓶颈，最新 run 主要卡在 `pe_history_missing`。
+- P1：策略二A 需要基于已补的 30 条 ground truth 跑筛选、复盘标签质量，并继续扩充真实集采事件样本。
+- P1：策略三仍需继续降低 parser warning 和失败样本；`001288` 仍依赖 candidates_json 兜底，2024 全量导入仍有 11 份 PDF 找到附注但未提取到境外行。
+- P1：港股扩展池目前只有 A/H 映射层，尚未消费 `$global-stock-data` 的港股行情、财务、新闻、资金流。
 
 推荐接手顺序：
 
@@ -103,16 +108,11 @@ jieba 分词 + TF-IDF + SQLite 实现的轻量 RAG（不依赖 chromadb，秒级
 cat data/exports/p0_audit.md
 cat data/exports/latest_candidate_evidence.md
 
-# 标注 human_label / label_reason 后回写
-python3 -m src.pipeline.cli label-import data/exports/human_label_queue.csv
-
-# 补策略二结构化样本
-python3 -m src.pipeline.cli pharma-template
-python3 -m src.pipeline.cli pharma-vbp --csv data/exports/pharma_vbp_events.csv
-python3 -m src.pipeline.cli pharma-gt --csv data/exports/pharma_vbp_ground_truth.csv
-
-# 复核 P0 闭环
-python3 -m src.pipeline.cli p0-audit --period 2025A --strategy all
+# P0 已全 OK；下一步建议从 P1/P2 校准开始
+python3 -m src.pipeline.cli pharma-screen --period 2025A --limit 100
+python3 -m src.pipeline.cli strategy1
+python3 -m src.pipeline.cli screen --period 2025A --strategy all --limit 30
+python3 -m src.pipeline.cli backtest --period 2025A --strategy all
 ```
 
 ---
@@ -286,6 +286,7 @@ python3 scripts/bootstrap_emweb_industry.py
 # 入库新下载的年报境外收入（P1.5-2：多 high 候选自动取合理值）
 python3 scripts/import_overseas_revenue.py
 python3 scripts/import_overseas_revenue.py 2025 --skip-f10-fallback  # 需要排查 PDF parser 时可关闭 F10 fallback
+python3 scripts/import_overseas_revenue.py 2025 --codes 001311,002085 # 只重跑指定股票，便于修 parser 难例
 
 # 重新跑策略三（新数据生效）
 python3 scripts/run_phase3_strategy3.py
@@ -337,7 +338,7 @@ python3 scripts/research_rag_cli.py search "宇通客车 海外订单" --stock 6
 
 ## 待升级项（按优先级）
 
-### P0 - ✅ 工程与研报闭环完成 / ⏳ 标签与医药样本待补齐
+### P0 - ✅ 闭环完成
 
 | 阶段 | 完成内容 |
 |------|---------|
@@ -348,14 +349,15 @@ python3 scripts/research_rag_cli.py search "宇通客车 海外订单" --stock 6
 | **策略精度提升**（2026-06-19）| 策略一加反转判定（24→4 只真反转）；策略三加现金流/负债率过滤（24→15 只）+ 一致预期可选过滤 |
 | **P0 状态化改造 + 事件驱动入口**（2026-06-27）| screening 抽象层（Status / ScreeningResult / MetricsSchema）+ screen_runs/candidate_scores 审计表 + `run_after_disclosure.py` + baseline_diff.py + 161 测试覆盖 |
 | **状态化改造修复**（2026-06-27）| 修 `run_overseas_champion` dup `_evaluate_one` 导致旧 CSV 入口不走状态化路径（P1-2/P1-3 增强失效）；修 resume 多策略 fingerprint 不一致；修 AkShare `revenue_yoy`/`gross_margin` 百分数单位；`cleanup_stale_screen_runs` 改用 INTERVAL 字面量 |
-| **P0 闭环工具**（2026-07-01）| 新增 `p0-audit`/`label-export`/`label-import`/`pharma-vbp`/`pharma-gt`；研报元数据覆盖已达 200/200，P0 审计改为要求本地研报 PDF 可用；人工标签、策略二 ground truth、医药集采事件仍需补齐真实样本 |
+| **P0 闭环工具**（2026-07-01）| 新增 `p0-audit`/`label-export`/`label-import`/`pharma-vbp`/`pharma-gt`；研报元数据覆盖已达 200/200，P0 审计改为要求本地研报 PDF 可用；当时暴露的人工标签、策略二 ground truth、医药集采事件缺口已在 2026-07-05 闭环补齐 |
 | **P0 对抗式审计修复**（2026-07-02）| `p0-audit` 不再给假绿灯：本地研报 PDF 不足、坏 ground truth、空 VBP 证据都会返回 TODO；标注默认按最新成功/部分成功 run 审计，避免历史 run 污染 |
 | **策略二A 工程闭环 MVP**（2026-07-03）| 新增 `pharma-template` 初始化模板、`pharma-screen` 集采修复型筛选入口、`docs/pharma_ground_truth_rulebook.md` 标注规则；`stock_industry` 保留 `sw_second/em2016` 等行业增强列，筛选结果落 `screen_runs/candidate_scores` |
 | **策略二A PB软约束 + A/H映射闭环**（2026-07-03）| `pharma-screen` 读取本地 `pe_pb_history` 计算 PB 分位，超过软阈值只降级 watch；新增 `global-map`、`global_stock_mappings` 表和 P0 审计项，为策略二B港股扩展池/A+H 对照做前置 |
-| **P0 数据补齐与交接快照**（2026-07-04）| `refresh-skill` 补齐最新缺失池 32 只；最新 `screen` run 为 `20260704_112743_614f_2025A`；研报 PDF/RAG 达 P0 门槛（263 条元数据、205 份本地 PDF、219 个 PDF 文件、2502 个 RAG chunks）；A/H 映射已有 5 条；待完成最新 7 只人工标签、策略二 30 条 ground truth 与 VBP 事件 |
+| **P0 数据补齐与交接快照**（2026-07-04）| `refresh-skill` 补齐最新缺失池 32 只；最新 `screen` run 为 `20260704_112743_614f_2025A`；研报 PDF/RAG 达 P0 门槛（263 条元数据、205 份本地 PDF、219 个 PDF 文件、2502 个 RAG chunks）；A/H 映射已有 5 条 |
 | **策略三估值原因码拆分**（2026-07-04）| 负 PE/估值缺失不再归入 `financial_data_missing`；估值源缺失返回 `valuation_data_missing`，非正或空 PE-TTM 返回 `pe_ttm_invalid`，并写入 `source_status.extra.valuation_missing_reason` |
 | **海外收入 parser 难例第一轮**（2026-07-04）| 修复“万吨/亿吨”等数量单位被误判成收入；当前年 0.00 的分地区行不再回退抓上一年金额；策略三低占比 best 候选会尝试 candidates_json 兜底；新增 `tests/fixtures/overseas_revenue_golden_cases.csv` 跟踪 `001288`/`002145`/`001311`/`002085` |
-| **海外收入 F10 fallback 入口**（2026-07-04）| 新增 `f10_overseas_revenue.py`，PDF 解析失败时 `import_overseas_revenue.py` 默认尝试 mootdx F10 主营构成；无 mootdx/网络失败时保留原 PDF error，可用 `--skip-f10-fallback` 关闭；`001311`/`002085` 本机实跑 F10 文本为空 |
+| **海外收入 F10 fallback 入口**（2026-07-04）| 新增 `f10_overseas_revenue.py`，PDF 解析失败时 `import_overseas_revenue.py` 默认尝试 mootdx F10 主营构成；无 mootdx/网络失败时保留原 PDF error，可用 `--skip-f10-fallback` 关闭；后续发现 `001311`/`002085` F10 文本为空，已改由 PDF parser 关键词补全解决 |
+| **P0 闭环收尾**（2026-07-05）| 最新 7 只 hit/watch 已回写人工标签；策略二 VBP 事件 8 条、ground truth 30 条通过校验；`001311`/`002085` 通过外销/其他国家和地区口径解析入库；`p0-audit --period 2025A --strategy all` 全 OK |
 
 ### P1 - ✅ 已完成（2026-06-27）
 
@@ -398,8 +400,8 @@ python3 scripts/research_rag_cli.py search "宇通客车 海外订单" --stock 6
 ### 已知问题
 
 - 海外收入多 high 候选时，P1.5-2 已自动取最小值并标 parse_warning；策略层 candidates_json 兜底已落地，兜底后海外同比会按修正值重算，但极端 case 仍可能漏过（需配合人工 review）
-- 海外收入解析仍有 12 份 PDF 找到附注但未提取到境外行（pdfplumber 表格结构识别限制；P1.5-2 已加区域名词扩展）
-- P0 审计采用严格口径：研报必须有本地 PDF，ground truth 必须通过合法标签/原因校验，VBP 事件必须带 source_url/evidence_text，标注规则文档和 A/H 映射也必须存在；当前研报 PDF/RAG 与 A/H 映射已达门槛，仍需填写 `data/exports/human_label_queue.csv`，并补齐策略二 `pharma_vbp_events.csv` 与 30 条 ground truth 后，`p0-audit` 才会返回全 OK
+- 海外收入解析仍有 11 份 2024 PDF 找到附注但未提取到境外行（pdfplumber 表格结构识别限制；不阻塞当前 P0，但属于后续 parser review 池）
+- P0 审计采用严格口径：研报必须有本地 PDF，ground truth 必须通过合法标签/原因校验，VBP 事件必须带 source_url/evidence_text，标注规则文档和 A/H 映射也必须存在；当前 `p0-audit --period 2025A --strategy all` 已全 OK
 - 核心 P0 pipeline 已接入 logging；部分 legacy 辅助脚本仍保留 print
 - 东财研报 EPS Y1/Y2 "今年/明年"口径跨年（部分发布日期早的研报"今年"指上一年），与同花顺固定年度口径有偏差，交叉验证时注意
 

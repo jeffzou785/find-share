@@ -131,7 +131,23 @@ def _load_history_from_store(store: DuckDBStore) -> dict[str, dict[int, float]]:
     return history
 
 
-def main(year: int = 2024, *, enable_f10_fallback: bool = True) -> int:
+def _normalize_codes(raw_codes: str | None) -> set[str] | None:
+    if not raw_codes:
+        return None
+    codes = {
+        part.strip().zfill(6)
+        for part in raw_codes.split(",")
+        if part.strip()
+    }
+    return codes or None
+
+
+def main(
+    year: int = 2024,
+    *,
+    enable_f10_fallback: bool = True,
+    codes: set[str] | None = None,
+) -> int:
     pdf_dir = config.ANNUAL_REPORT_PDF_DIR
     _log(f"扫描目录: {pdf_dir}")
     # canonical: _annual_report.pdf；legacy: _annual.pdf（旧下载器产出）
@@ -141,6 +157,8 @@ def main(year: int = 2024, *, enable_f10_fallback: bool = True) -> int:
     seen = {p.stem.split("_")[0] for p in canonical}
     legacy_only = [p for p in legacy if p.stem.split("_")[0] not in seen]
     pdfs = canonical + legacy_only
+    if codes:
+        pdfs = [p for p in pdfs if p.stem.split("_")[0] in codes]
     _log(
         f"找到 {len(pdfs)} 份年报 PDF"
         f"（canonical {len(canonical)} + legacy {len(legacy_only)}）\n"
@@ -274,5 +292,14 @@ if __name__ == "__main__":
         action="store_true",
         help="PDF 解析失败时不尝试 mootdx F10 主营构成 fallback",
     )
+    parser.add_argument(
+        "--codes",
+        default=None,
+        help="只导入指定股票，多个代码用逗号分隔，如 001311,002085",
+    )
     args = parser.parse_args()
-    sys.exit(main(args.year, enable_f10_fallback=not args.skip_f10_fallback))
+    sys.exit(main(
+        args.year,
+        enable_f10_fallback=not args.skip_f10_fallback,
+        codes=_normalize_codes(args.codes),
+    ))
