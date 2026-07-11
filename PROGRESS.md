@@ -193,7 +193,39 @@ PE 5y 分位阈值放宽影响（基于 metrics 快照，**注意 first-rejectio
 
 1. ✅ 阈值敏感度分析（详见 1.9）：当前 30% 阈值过严，建议下阶段测试 10y 窗口或子行业相对分位。
 2. ✅ Backtest + financial-validate 基础设施跑通；financial validation 已产出 overseas 2025A 的 8 条 verdict。Backtest 需等窗口走完。
-3. ⏳ 研报 claim 抽取：受限于 broker_reports 数据稀疏（医药/消费 hit 候选覆盖率 0%），需先批量导入研报再做 claim 解析。
+3. ✅ 研报 claim 抽取 schema 已建（详见 1.10），等研报 PDF 入 RAG 后批量补全。
+
+### 1.10 Phase D：基础设施修补
+
+**evidence_claims 表**（P2-3）：
+
+```sql
+CREATE TABLE evidence_claims (
+    code VARCHAR, name VARCHAR, claim_text VARCHAR, claim_source VARCHAR,
+    broker VARCHAR, report_date DATE, report_id VARCHAR,
+    evidence_type VARCHAR, confidence VARCHAR, tags_json VARCHAR,
+    raw_text VARCHAR, source_url VARCHAR, created_at TIMESTAMP,
+    PRIMARY KEY (code, report_date, claim_text, evidence_type, report_id)
+);
+```
+
+- `evidence_type` enum：`overseas_order / capacity / customer / license_out / fda_cde / vbp_event / guidance`
+- `DuckDBStore.save_evidence_claims / load_evidence_claims` 方法
+- `scripts/import_evidence_claims.py`：CSV 导入 + 校验（report_date 必填、evidence_type/confidence enum 校验）
+- `tests/fixtures/evidence_claims_seed.csv`：4 条样本（三一 capacity、恒瑞 guidance、恒瑞 fda_cde、大博 overseas_order）
+- `tests/scripts/test_import_evidence_claims.py`：9 条测试
+
+**financial-validation 阈值收紧**：
+- `min_revenue_yoy` / `min_net_profit_yoy` 默认从 0.0 → 0.05（5%）
+- 函数默认 + CLI 默认 + batch 函数默认三处同步
+- 验证：三一重工 600031 verdict 从 `confirmed` → `mixed`（rev+14% 过 5%、np+0.46% 不过 5%）
+
+**broker_reports 持续导入**：
+- 603317 天味食品（consumer watch）补 100 篇研报
+- 001231 农心科技东财返回空（小盘股无覆盖）
+- 全库 16 distinct codes / 903 rows
+
+
 
 ## 3. 下一步命令
 

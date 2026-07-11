@@ -288,6 +288,23 @@ CREATE TABLE IF NOT EXISTS financial_validation_results (
     created_at TIMESTAMP,
     PRIMARY KEY (run_id, code, strategy, validation_period)
 );
+
+CREATE TABLE IF NOT EXISTS evidence_claims (
+    code VARCHAR,
+    name VARCHAR,
+    claim_text VARCHAR,
+    claim_source VARCHAR,
+    broker VARCHAR,
+    report_date DATE,
+    report_id VARCHAR,
+    evidence_type VARCHAR,
+    confidence VARCHAR,
+    tags_json VARCHAR,
+    raw_text VARCHAR,
+    source_url VARCHAR,
+    created_at TIMESTAMP,
+    PRIMARY KEY (code, report_date, claim_text, evidence_type, report_id)
+);
 """
 
 
@@ -1048,3 +1065,29 @@ class DuckDBStore:
             params.append(str(code).zfill(6))
         sql += " ORDER BY run_id, code, strategy, validation_period"
         return self.conn.execute(sql, params).df()
+
+    # === evidence_claims（P2-3：研报 claim 抽取） ===
+    def save_evidence_claims(self, df: pd.DataFrame) -> int:
+        if df.empty:
+            return 0
+        df = df.copy()
+        df["created_at"] = pd.Timestamp.now()
+        self.upert_dataframe("evidence_claims", df)
+        return len(df)
+
+    def load_evidence_claims(
+        self,
+        code: str | None = None,
+        evidence_type: str | None = None,
+    ) -> pd.DataFrame:
+        sql = "SELECT * FROM evidence_claims WHERE 1=1"
+        params: list = []
+        if code:
+            sql += " AND code = ?"
+            params.append(str(code).zfill(6))
+        if evidence_type:
+            sql += " AND evidence_type = ?"
+            params.append(evidence_type)
+        sql += " ORDER BY report_date DESC, code"
+        return self.conn.execute(sql, params).df()
+

@@ -67,8 +67,8 @@ def validate_next_financials(
     candidate: dict,
     financials: pd.DataFrame,
     validation_period: str | None = None,
-    min_revenue_yoy: float = 0.0,
-    min_net_profit_yoy: float = 0.0,
+    min_revenue_yoy: float = 0.05,
+    min_net_profit_yoy: float = 0.05,
 ) -> dict:
     """验证单个候选的下一期财务表现。"""
     code = str(candidate.get("code", "")).zfill(6)
@@ -164,8 +164,8 @@ def validate_next_financials_batch(
     financials_loader,
     validation_period: str | None = None,
     statuses: Iterable[str] = DEFAULT_VALIDATION_STATUSES,
-    min_revenue_yoy: float = 0.0,
-    min_net_profit_yoy: float = 0.0,
+    min_revenue_yoy: float = 0.05,
+    min_net_profit_yoy: float = 0.05,
 ) -> pd.DataFrame:
     if candidates.empty:
         return pd.DataFrame()

@@ -1,0 +1,5 @@
+code,name,claim_text,claim_source,broker,report_date,report_id,evidence_type,confidence,tags_json,raw_text,source_url
+600031,三一重工,Q1营收同比+14%领跑行业，看好上行周期龙头利润弹性,broker_report_title,东吴证券,2026-04-30,AP202604301821874307,capacity,high,"[""leading_player"",""upcycle""]",2026年一季报点评：Q1营收同比+14%领跑行业，看好上行周期龙头利润弹性,
+600276,恒瑞医药,BD收入稳健，26年创新药指引收入增速30%+,broker_report_title,中邮证券,2026-05-07,AP202605071822040512,guidance,high,"[""guidance_30pct"",""innovative_drug""]",BD收入稳健，26年创新药指引收入增速30%+，
+600276,恒瑞医药,创新成果密集落地，全球化布局加速推进,broker_report_title,华源证券,2026-05-07,AP202605071822022730,fda_cde,medium,"[""globalization"",""innovation_acceleration""]",创新成果密集落地，全球化布局加速推进，
+002901,大博医疗,骨科脊柱类耗材国家集采产生拟中选结果 公司相关产品中选,vbp_event,国家组织高值医用耗材联合采购办公室,2022-09-27,smpaa-2022-09-27,overseas_order,high,"[""vbp_won"",""spine_consumables""]",骨科脊柱类耗材国家集采产生拟中选结果 公司相关产品中选 后续重点跟踪集采后收入恢复和盈利质量,https://www.smpaa.cn/gjsdcg/2022/09/27/11034.shtml

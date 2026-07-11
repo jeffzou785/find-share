@@ -103,10 +103,10 @@ def main() -> int:
                         help="覆盖验证报告期；默认按 source period 推导下一期")
     parser.add_argument("--statuses", nargs="*", default=list(DEFAULT_VALIDATION_STATUSES),
                         help="参与验证的 candidate status，默认 hit watch")
-    parser.add_argument("--min-revenue-yoy", type=float, default=0.0,
-                        help="收入同比确认阈值，小数口径，如 0.05 表示 5%")
-    parser.add_argument("--min-net-profit-yoy", type=float, default=0.0,
-                        help="净利润同比确认阈值，小数口径，如 0.10 表示 10%")
+    parser.add_argument("--min-revenue-yoy", type=float, default=0.05,
+                        help="收入同比确认阈值，小数口径，如 0.05 表示 5%（默认）")
+    parser.add_argument("--min-net-profit-yoy", type=float, default=0.05,
+                        help="净利润同比确认阈值，小数口径，如 0.10 表示 10%（默认 5%）")
     parser.add_argument(
         "--output-dir",
         default=None,
