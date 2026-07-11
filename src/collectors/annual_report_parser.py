@@ -421,6 +421,9 @@ _CONFIDENCE_RANK = {"high": 3, "medium": 2, "low": 1}
 
 # P1.5-2：多 high 候选金额差异倍数阈值（max/min > 此值 → 误抓总营收风险高）
 MULTI_HIGH_AMOUNT_RATIO = 5.0
+# Phase F：min/max < 此值时，min 视为表格残留噪音（如 0.00 yi 误抓），
+# 取 max 而非 min。覆盖 ratio > 50x 的极端差异。
+MULTI_HIGH_NOISE_FLOOR = 0.02
 
 
 def select_best_record(
@@ -455,16 +458,27 @@ def select_best_record(
     other_conf = [r for r in pool if r.confidence != "high"]
 
     # P1.5-2：多 high 候选金额差异大时，取最小（避免误抓总营收）
+    # Phase F 修复：若 min 接近 0（< 1% max，即 ratio > 100x），min 更可能是
+    # 表格残留噪音（如某行 0.00 元被误抓），此时取 max。
     if len(high_conf) >= 2:
         amounts = sorted([r.revenue_yuan or 0 for r in high_conf], reverse=True)
         ratio_max_min = amounts[0] / amounts[-1] if amounts[-1] > 0 else float("inf")
         if ratio_max_min > MULTI_HIGH_AMOUNT_RATIO:
-            # 取最小的高置信度候选
-            best = min(high_conf, key=lambda r: r.revenue_yuan or 0)
-            warnings.append(
-                f"multi_high_chose_smaller:max={amounts[0]/1e8:.2f}yi "
-                f"min={amounts[-1]/1e8:.2f}yi ratio={ratio_max_min:.1f}x"
-            )
+            if amounts[0] > 0 and amounts[-1] / amounts[0] < MULTI_HIGH_NOISE_FLOOR:
+                # min < 2% max：min 视为噪音，取 max
+                best = max(high_conf, key=lambda r: r.revenue_yuan or 0)
+                warnings.append(
+                    f"multi_high_min_below_noise_floor:max={amounts[0]/1e8:.2f}yi "
+                    f"min={amounts[-1]/1e8:.2f}yi ratio={ratio_max_min:.1f}x "
+                    f"(min<{MULTI_HIGH_NOISE_FLOOR*100:.0f}%max, treated as table noise)"
+                )
+            else:
+                # 取最小的高置信度候选（原 P1.5-2 行为）
+                best = min(high_conf, key=lambda r: r.revenue_yuan or 0)
+                warnings.append(
+                    f"multi_high_chose_smaller:max={amounts[0]/1e8:.2f}yi "
+                    f"min={amounts[-1]/1e8:.2f}yi ratio={ratio_max_min:.1f}x"
+                )
         else:
             # 金额差异小：取最大（原行为）
             best = max(high_conf, key=lambda r: r.revenue_yuan or 0)

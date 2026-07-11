@@ -262,6 +262,28 @@ CREATE TABLE evidence_claims (
 - 002262/600380/688029：仍 vbp_event_missing（未补，缺乏高可信公开证据）
 - 000661 长春高新：vbp_event_missing（生长激素不在国家集采）
 
+### 1.12 Phase F：select_best_record noise floor
+
+针对 parser-review 剩余 `parse_warning` 中的"多 high 候选金额差异极大且最小值接近 0"这一子类，修了 `select_best_record` 的取值逻辑。
+
+**根因**：P1.5-2 引入的 `MULTI_HIGH_AMOUNT_RATIO=5.0` 守门——多 high 候选 max/min > 5x 时一律取 min，本意是规避"误抓总营收"（600690 案例）。但另一类 PDF（分地区附注含"出口 0"或表格残留行）会出现 max=真实海外收入、min=0 或接近 0 的噪音，此时取 min 反而把正确值丢了。
+
+**修复**（`src/collectors/annual_report_parser.py`）：引入 `MULTI_HIGH_NOISE_FLOOR = 0.02`，在原 ratio>5x 分支内再加一层判定：若 `min < 2% × max`，把 min 视为表格残留噪音，改取 max 并标记 `multi_high_min_below_noise_floor`。否则保留原 P1.5-2 取 min 行为。
+
+**4 条新增 golden case**（`tests/fixtures/overseas_revenue_golden_cases.csv`）：
+
+| code | name | max (yi) | min (yi) | ratio | 旧逻辑 | 新逻辑 |
+|---|---|--:|--:|--:|---|---|
+| 600066 | 宇通客车 | 211.08 | 0 | ∞ | 取 0 ❌ | 取 211 ✓ |
+| 000913 | 钱江摩托 | 29 | 0 | ∞ | 取 0 ❌ | 取 29 ✓ |
+| 605333 | 沪光股份 | 2.61 | 0 | ∞ | 取 0 ❌ | 取 2.61 ✓ |
+| 688633 | 星球石墨 | 1.58 | 0 | ∞ | 取 0 ❌ | 取 1.58 ✓ |
+
+**测试**：
+- `tests/collectors/test_annual_report_parser.py` 新增 2 条单元测试：`test_phase_f_multi_high_min_below_noise_floor_picks_max`（min=0 极端场景）+ `test_phase_f_multi_high_small_nonzero_min_below_noise_floor`（min=小非零值，1.007% max）。
+- `RUN_PDF_GOLDEN=1` 跑 9 条真实 PDF golden 全过（171s）。
+- 全套 `pytest -q`：445 passed, 1 skipped，无回归。
+
 ## 3. 下一步命令
 
 ```bash

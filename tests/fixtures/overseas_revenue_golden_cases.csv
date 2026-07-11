@@ -6,3 +6,8 @@ code,name,year,pdf_path,expected_status,expected_best_yi_min,expected_best_yi_ma
 002085,万丰奥威,2024,data/pdfs/annual_reports/002085_2024_annual_report.pdf,fixed,79.60,79.70,79.60,79.70,,Add 其他国家和地区 keyword coverage
 002085,万丰奥威,2025,data/pdfs/annual_reports/002085_2025_annual_report.pdf,fixed,76.20,76.30,76.20,76.30,,Add 其他国家和地区 keyword coverage
 601766,中国中车,2025,data/pdfs/annual_reports/601766_2025_annual_report.pdf,fixed,348.0,349.0,348.0,349.0,,Add 其他国家或地区 keyword coverage (或 vs 和)
+600066,宇通客车,2025,data/pdfs/annual_reports/600066_2025_annual_report.pdf,fixed,210.0,212.0,210.0,212.0,,select_best_record: when min<1% max treat as table noise (海外 211yi not 出口 0)
+000913,钱江摩托,2025,data/pdfs/annual_reports/000913_2025_annual_report.pdf,fixed,28.0,30.0,28.0,30.0,,select_best_record: 境外 29yi chosen over 出口 0 noise
+605333,沪光股份,2025,data/pdfs/annual_reports/605333_2025_annual_report.pdf,fixed,2.5,2.7,2.5,2.7,,select_best_record: 境外 2.61yi chosen
+688633,星球石墨,2025,data/pdfs/annual_reports/688633_2025_annual_report.pdf,fixed,1.5,1.7,1.5,1.7,,select_best_record: 国外 1.58yi chosen
+

@@ -212,6 +212,37 @@ class TestSelectBestRecord:
         assert best.revenue_yuan == 6_200_000_000  # 取最小
         assert any("multi_high_chose_smaller" in w for w in warns)
 
+    def test_phase_f_multi_high_min_below_noise_floor_picks_max(self):
+        """Phase F：min < 2% max 时视为表格噪音，取 max。
+
+        600066 真实案例：max=211 yi（真实海外）vs min=0 yi（噪音）。
+        旧逻辑：取 min=0 → 错误
+        新逻辑：取 max=211 yi + 标 multi_high_min_below_noise_floor
+        """
+        records = [
+            self._rec(21_108_000_000, confidence="high"),  # 真实海外
+            self._rec(0, confidence="high"),                # 表格残留
+        ]
+        best, warns = select_best_record(records)
+        assert best is not None
+        assert best.revenue_yuan == 21_108_000_000
+        assert any("multi_high_min_below_noise_floor" in w for w in warns)
+
+    def test_phase_f_multi_high_small_nonzero_min_below_noise_floor(self):
+        """Phase F：min 是小非零值（< 2% max）也视为噪音。
+
+        覆盖 000030 场景：max=7.94 yi vs min=0.08 yi（min=1.007% max）。
+        旧 1% 阈值漏修，新 2% 阈值覆盖。
+        """
+        records = [
+            self._rec(7_940_000_000, confidence="high"),    # 真实境外
+            self._rec(80_000_000, confidence="high"),       # 表格噪音（0.08 yi）
+        ]
+        best, warns = select_best_record(records)
+        assert best is not None
+        assert best.revenue_yuan == 7_940_000_000
+        assert any("multi_high_min_below_noise_floor" in w for w in warns)
+
     def test_p15_2_multi_high_small_gap_picks_larger(self):
         """max/min < 5x 时仍取最大（多个境外分区的最大单区）。"""
         records = [
