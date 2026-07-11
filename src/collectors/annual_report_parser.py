@@ -425,6 +425,106 @@ MULTI_HIGH_AMOUNT_RATIO = 5.0
 # 取 max 而非 min。覆盖 ratio > 50x 的极端差异。
 MULTI_HIGH_NOISE_FLOOR = 0.02
 
+# Phase G：具体地区名（非聚合关键词）。多个平行具体地区无聚合行时应 SUM。
+SPECIFIC_REGION_NAMES = {
+    "美洲", "北美", "南美",
+    "欧洲", "欧盟",
+    "亚洲", "东南亚", "东亚",
+    "非洲",
+    "大洋洲",
+    "日韩", "中日韩",
+}
+
+
+def _is_sub_region_pattern(rec: OverseasRevenueRecord) -> bool:
+    """Phase G：检测候选是否是某聚合区域的子分区/子类型。
+
+    Returns True if raw_text 表明该行是聚合下的子项（如 '境外-非洲'、'直接出口'），
+    应与同 group 其他子项 SUM，而非当作重复聚合行 PICK。
+
+    Examples:
+        '境外-非洲 914M'         → True (region='境外'，子区='非洲')
+        '境外:欧洲 39M'          → True
+        '直接出口 1009M'         → True (子类型)
+        '间接出口 329M'          → True
+        '境外 618M 16.89%'       → False (独立聚合行)
+        '3,206M元，其中：...'    → False (narrative text)
+    """
+    raw = (rec.raw_text or "").strip()
+    region = rec.region_name or ""
+    if not raw or not region:
+        return False
+
+    # 模式 1：region 后紧跟分隔符再跟子区名（非常用区开头不是数字）
+    for sep in ("-", "—", ":", "："):
+        idx = raw.find(sep)
+        if 0 < idx <= len(region) + 2:
+            prefix = raw[:idx].strip()
+            if prefix == region:
+                rest = raw[idx + 1:].strip()
+                if rest and rest[0] not in "0123456789":
+                    return True
+
+    # 模式 2：直接/间接 + region（直接出口、间接外销 等）
+    for prefix_kw in ("直接", "间接"):
+        if raw.startswith(prefix_kw):
+            tail = raw[len(prefix_kw):].lstrip()
+            if tail.startswith(region):
+                return True
+
+    return False
+
+
+def _sum_records(records: list[OverseasRevenueRecord], label: str) -> OverseasRevenueRecord:
+    """Phase G：合成 SUM 记录。region_name 用 label 标注来源。"""
+    total = sum(r.revenue_yuan or 0 for r in records)
+    template = records[0]
+    return OverseasRevenueRecord(
+        stock_code=template.stock_code,
+        report_period=template.report_period,
+        region_name=label,
+        revenue=total,
+        revenue_unit="元",
+        revenue_yuan=total,
+        source_page=template.source_page,
+        raw_text=f"SUM({len(records)}): " + " + ".join(
+            f"{(r.revenue_yuan or 0)/1e8:.2f}yi" for r in records
+        )[:160],
+        is_total_row=False,
+        confidence="high",
+    )
+
+
+def _maybe_sum_high_confidence(high_conf: list[OverseasRevenueRecord]) -> tuple[Optional[OverseasRevenueRecord], Optional[str]]:
+    """Phase G：若多 high 候选应被 SUM（而非 PICK），返回 (合成记录, 通道名)。
+
+    两种 SUM 场景：
+    - sub_region_same_aggregate：所有候选同 region_name 且都是子分区/子类型
+      （如 '境外-非洲' + '境外-大洋洲'，'直接出口' + '间接出口'）
+    - parallel_specific_regions：所有候选都是不同具体地区名（无聚合行）
+      （如 '美洲' + '欧洲' + '亚洲'）
+
+    Returns:
+        (None, None) 若不触发 SUM，由上层走原 ratio 逻辑。
+    """
+    if len(high_conf) < 2:
+        return None, None
+
+    region_names = {r.region_name for r in high_conf}
+
+    # 场景 A：同 region_name 且全部子分区/子类型
+    if len(region_names) == 1:
+        if all(_is_sub_region_pattern(r) for r in high_conf):
+            region = high_conf[0].region_name
+            return _sum_records(high_conf, f"{region}(sum:{len(high_conf)})"), "sub_region_same_aggregate"
+        return None, None
+
+    # 场景 B：多个不同具体地区，且无聚合关键词
+    if all(r.region_name in SPECIFIC_REGION_NAMES for r in high_conf):
+        return _sum_records(high_conf, f"境外(sum:{len(high_conf)})"), "parallel_specific_regions"
+
+    return None, None
+
 
 def select_best_record(
     records: list[OverseasRevenueRecord],
@@ -460,7 +560,18 @@ def select_best_record(
     # P1.5-2：多 high 候选金额差异大时，取最小（避免误抓总营收）
     # Phase F 修复：若 min 接近 0（< 1% max，即 ratio > 100x），min 更可能是
     # 表格残留噪音（如某行 0.00 元被误抓），此时取 max。
+    # Phase G：若多 high 是同聚合下的子分区/子类型（境外-非洲、直接出口）或
+    # 多个平行具体地区（美洲/欧洲/亚洲 无聚合行），应 SUM 而非 PICK。
     if len(high_conf) >= 2:
+        summed, channel = _maybe_sum_high_confidence(high_conf)
+        if summed is not None:
+            best = summed
+            warnings.append(
+                f"phase_g_summed:{channel}:n={len(high_conf)} "
+                f"total={(summed.revenue_yuan or 0)/1e8:.2f}yi"
+            )
+            return best, warnings
+
         amounts = sorted([r.revenue_yuan or 0 for r in high_conf], reverse=True)
         ratio_max_min = amounts[0] / amounts[-1] if amounts[-1] > 0 else float("inf")
         if ratio_max_min > MULTI_HIGH_AMOUNT_RATIO:

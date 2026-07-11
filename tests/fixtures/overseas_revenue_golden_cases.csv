@@ -1,5 +1,5 @@
 code,name,year,pdf_path,expected_status,expected_best_yi_min,expected_best_yi_max,expected_preferred_yi_min,expected_preferred_yi_max,expected_error_contains,next_action
-001288,运机集团,2025,data/pdfs/annual_reports/001288_2025_annual_report.pdf,candidate_fallback_required,0.90,1.00,9.10,9.20,,Use candidates_json fallback to the Africa row before screening
+001288,运机集团,2025,data/pdfs/annual_reports/001288_2025_annual_report.pdf,fixed,10.0,10.2,10.0,10.2,,Phase G: SUM 境外-非洲 9.14yi + 境外-大洋洲 0.94yi (was candidate_fallback_required)
 002145,钛能化学,2025,data/pdfs/annual_reports/002145_2025_annual_report.pdf,fixed,25.60,25.65,25.60,25.65,,Guard against parsing volume text such as 万吨 as revenue
 001311,多利科技,2024,data/pdfs/annual_reports/001311_2024_annual_report.pdf,fixed,1.43,1.45,1.43,1.45,,Add 外销 keyword coverage
 001311,多利科技,2025,data/pdfs/annual_reports/001311_2025_annual_report.pdf,fixed,1.65,1.66,1.65,1.66,,Add 外销 keyword coverage
@@ -10,5 +10,8 @@ code,name,year,pdf_path,expected_status,expected_best_yi_min,expected_best_yi_ma
 000913,钱江摩托,2025,data/pdfs/annual_reports/000913_2025_annual_report.pdf,fixed,28.0,30.0,28.0,30.0,,select_best_record: 境外 29yi chosen over 出口 0 noise
 605333,沪光股份,2025,data/pdfs/annual_reports/605333_2025_annual_report.pdf,fixed,2.5,2.7,2.5,2.7,,select_best_record: 境外 2.61yi chosen
 688633,星球石墨,2025,data/pdfs/annual_reports/688633_2025_annual_report.pdf,fixed,1.5,1.7,1.5,1.7,,select_best_record: 国外 1.58yi chosen
-000030,富奥股份,2025,data/pdfs/annual_reports/000030_2025_annual_report.pdf,fixed,7.8,8.1,7.8,8.1,,select_best_record: 欧洲 7.94yi chosen (min<2%max noise floor, small nonzero min case)
+000030,富奥股份,2025,data/pdfs/annual_reports/000030_2025_annual_report.pdf,fixed,9.0,9.3,9.0,9.3,,Phase G: SUM 欧洲 7.94 + 北美 0.96 + 亚洲 0.08 + 南美 0.19 (4 specific regions)
+600523,贵航股份,2025,data/pdfs/annual_reports/600523_2025_annual_report.pdf,fixed,0.6,0.7,0.6,0.7,,Phase G: SUM 美洲 0.01 + 欧洲 0.40 + 亚洲 0.25 (parallel specific regions)
+603086,先达股份,2025,data/pdfs/annual_reports/603086_2025_annual_report.pdf,fixed,13.0,13.6,13.0,13.6,,Phase G: SUM 直接出口 10.09 + 间接出口 3.30 (sub-types of 出口)
+603969,银龙股份,2025,data/pdfs/annual_reports/603969_2025_annual_report.pdf,fixed,6.0,6.4,6.0,6.4,,P1.5-2 chose_smaller: 境外 6.18yi picked (32.06 is total revenue misgrab)
 

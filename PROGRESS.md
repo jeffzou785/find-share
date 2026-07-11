@@ -313,6 +313,46 @@ CREATE TABLE evidence_claims (
 
 **parser-review 进展**：issues 28（Phase F 前）→ 17（代码修复后）→ 16（数据回填后，000030 从 chose_smaller 错值改为 noise_floor 正确值）。剩余 16 条：5 P1 parse_warning + 2 P2 low_confidence + 9 P3（8 pure_domestic + 1 no_overseas_section）。
 
+### 1.14 Phase G：多 high 候选 SUM 通道
+
+针对 parser-review 剩余 4 个 P1 `parse_warning`（001288/600523/603086/603969），发现 3 个的根因不是金额选择，而是 parser 把同一聚合下的**子分区/子类型行**当作重复聚合候选 PICK，应该 SUM。
+
+**根因**：`OVERSEAS_KEYWORDS` 同时含聚合（境外/海外/出口）和具体地区（美洲/欧洲/亚洲/...）。PDF 分地区表若不分"境外"行只列子区，或同一境外下再分境外-非洲/境外-大洋洲，parser 把每行都当候选送进 `select_best_record`，触发 chose_smaller 取最小。
+
+**Phase G 修复**（`src/collectors/annual_report_parser.py`）：在 `select_best_record` 的 multi-high ratio 逻辑前，先尝试 SUM 两种场景：
+
+| 场景 | 触发条件 | 案例 |
+|---|---|---|
+| `sub_region_same_aggregate` | 所有候选同 region_name，且 raw_text 全部是子分区/子类型模式（`境外-非洲`、`直接出口` 等）| 001288（境外-非洲+大洋洲 → 10.09yi）、603086（直接+间接出口 → 13.39yi） |
+| `parallel_specific_regions` | 所有候选都是不同具体地区名（美洲/欧洲/亚洲/...），且无聚合关键词 | 600523（美洲+欧洲+亚洲 → 0.66yi）、000030（欧洲+北美+亚洲+南美 → 9.17yi，比 Phase F 的 7.94 更准） |
+
+不触发 SUM 的场景（保留原 PICK 逻辑）：
+- 603969：1 条干净聚合 + 1 条 narrative 误抓 → chose_smaller 取 min（6.18yi 真实境外 vs 32.06yi 总营收误抓）✓
+
+**实现**：
+- `_is_sub_region_pattern(rec)` 检测 raw_text 是否是 `region-separator-subname` 模式或 `直接/间接+region` 子类型。
+- `_sum_records(records, label)` 合成 SUM 记录，region_name 标注来源（如 `境外(sum:4)`）。
+- `_maybe_sum_high_confidence(high_conf)` 返回 SUM 记录或 None，None 时上层走原 ratio 逻辑。
+
+**5 条新增/更新 golden case**（全部跑真实 PDF golden 验证）：
+
+| code | name | 旧值（错） | 新值（Phase G） | 备注 |
+|---|---|--:|--:|---|
+| 000030 | 富奥股份 | 7.94yi（Phase F max）| **9.17yi** | 4 子区 SUM，更准 |
+| 001288 | 运机集团 | 0.94yi（chose_smaller）| **10.09yi** | 非洲+大洋洲 SUM |
+| 600523 | 贵航股份 | 0.01yi（chose_smaller）| **0.65yi** | 美洲+欧洲+亚洲 SUM |
+| 603086 | 先达股份 | 10.09yi（multiple_high max）| **13.39yi** | 直接+间接出口 SUM |
+| 603969 | 银龙股份 | 6.18yi（chose_smaller）| 6.18yi | 保留原 PICK ✓ |
+
+**测试**：
+- `tests/collectors/test_annual_report_parser.py` 新增 4 条 Phase G 单元测试（含 1 条负向：duplicate aggregate 不触发 SUM）。
+- `RUN_PDF_GOLDEN=1` 跑 14 条真实 PDF golden 全过（211s）。
+- 全套 `pytest -q`：449 passed, 1 skipped，无回归。
+
+**数据回填**：4 个 code 重新 import-overseas + 清理 4 条 stale 旧 PICK 行（同 Phase F 模式：PK 含 region_name，新 SUM 行的 region 是 `境外(sum:N)` 与旧 region 不同，留下 stale）。
+
+**parser-review 进展**：issues 16（Phase F 后）→ 16（Phase G 后，数量未变）。**关键差异**：5 P1 `parse_warning` 全部从"错值"变成"正确值 + 信息性警告"，全部纳入 golden case 回归覆盖。
+
 ## 3. 下一步命令
 
 ```bash

@@ -145,11 +145,13 @@ class TestSelectBestRecord:
     def _rec(
         self, revenue_yuan: float, confidence: str = "medium",
         is_total: bool = False, region: str = "境外",
+        raw_text: str = "",
     ) -> OverseasRevenueRecord:
         return OverseasRevenueRecord(
             stock_code="", report_period="", region_name=region,
             revenue=revenue_yuan, revenue_unit="元", revenue_yuan=revenue_yuan,
             confidence=confidence, is_total_row=is_total,
+            raw_text=raw_text,
         )
 
     def test_empty_records_returns_none(self):
@@ -231,8 +233,9 @@ class TestSelectBestRecord:
     def test_phase_f_multi_high_small_nonzero_min_below_noise_floor(self):
         """Phase F：min 是小非零值（< 2% max）也视为噪音。
 
-        覆盖 000030 场景：max=7.94 yi vs min=0.08 yi（min=1.007% max）。
-        旧 1% 阈值漏修，新 2% 阈值覆盖。
+        Hypothetical: max=7.94 yi vs min=0.08 yi（min=1.007% max）。
+        min/max=1.007% < 2% noise floor → 取 max + 标 multi_high_min_below_noise_floor。
+        （000030 真实 PDF 现走 Phase G SUM 通道，此测试保留覆盖纯 noise-floor 分支。）
         """
         records = [
             self._rec(7_940_000_000, confidence="high"),    # 真实境外
@@ -252,6 +255,77 @@ class TestSelectBestRecord:
         best, warns = select_best_record(records)
         assert best is not None
         assert best.revenue_yuan == 10_000_000_000
+
+    def test_phase_g_sums_sub_regions_same_aggregate(self):
+        """Phase G：同 region_name 下的子分区（境外-非洲 + 境外-大洋洲）应 SUM。
+
+        001288 真实案例：旧逻辑 max=9.14 / min=0.94 ratio=9.7x → 取 min=0.94 ❌
+        Phase G：识别为子分区 → SUM=10.08 yi + 标 phase_g_summed:sub_region_same_aggregate
+        """
+        records = [
+            self._rec(914_349_478, confidence="high", region="境外",
+                      raw_text="境外-非洲 914,349,478.42 51.19%"),
+            self._rec(94_416_701, confidence="high", region="境外",
+                      raw_text="境外-大洋洲 94,416,701.87 5.29%"),
+        ]
+        best, warns = select_best_record(records)
+        assert best is not None
+        assert abs(best.revenue_yuan - 1_008_766_179) < 1
+        assert any("phase_g_summed:sub_region_same_aggregate" in w for w in warns)
+
+    def test_phase_g_sums_sub_types_direct_indirect_export(self):
+        """Phase G：直接出口 + 间接出口 是出口的子类型，应 SUM。
+
+        603086 真实案例：旧逻辑 max=10.09 / min=3.30 ratio<5x → 取 max=10.09 ❌
+        Phase G：识别为子类型 → SUM=13.39 yi
+        """
+        records = [
+            self._rec(1_009_148_080, confidence="high", region="出口",
+                      raw_text="直接出口 1,009,148,080.79"),
+            self._rec(329_746_514, confidence="high", region="出口",
+                      raw_text="间接出口 329,746,514.10"),
+        ]
+        best, warns = select_best_record(records)
+        assert best is not None
+        assert abs(best.revenue_yuan - 1_338_894_594) < 1
+        assert any("phase_g_summed:sub_region_same_aggregate" in w for w in warns)
+
+    def test_phase_g_sums_parallel_specific_regions(self):
+        """Phase G：多个不同具体地区（美洲/欧洲/亚洲）无聚合行时应 SUM。
+
+        600523 真实案例：旧逻辑 max=0.40 / min=0.01 ratio=40x → 取 min=0.01 ❌
+        Phase G：3 个平行具体地区 → SUM=0.66 yi
+        """
+        records = [
+            self._rec(999_929, confidence="high", region="美洲",
+                      raw_text="美洲 999,928.75"),
+            self._rec(39_960_944, confidence="high", region="欧洲",
+                      raw_text="欧洲 39,960,944.47"),
+            self._rec(24_532_453, confidence="high", region="亚洲",
+                      raw_text="亚洲 24,532,453.15"),
+        ]
+        best, warns = select_best_record(records)
+        assert best is not None
+        assert abs(best.revenue_yuan - 65_493_326) < 1
+        assert any("phase_g_summed:parallel_specific_regions" in w for w in warns)
+
+    def test_phase_g_does_not_sum_duplicate_aggregates(self):
+        """Phase G：真正的重复聚合行（603969 模式）不触发 SUM，走原 chose_smaller。
+
+        603969 真实案例：max=32.06（总营收误抓）vs min=6.18（真实境外）。
+        raw_text 没有 sub-region 模式 → Phase G 不触发 → 取 min=6.18 ✓
+        """
+        records = [
+            self._rec(618_261_249, confidence="high", region="境外",
+                      raw_text="境外 618,261,249.34 513,822,173.65 16.89%"),
+            self._rec(3_206_316_564, confidence="high", region="境外",
+                      raw_text="3,206,316,564.23元，其中：境内2,588,055,314.89"),
+        ]
+        best, warns = select_best_record(records)
+        assert best is not None
+        assert best.revenue_yuan == 618_261_249  # 取 min
+        assert any("multi_high_chose_smaller" in w for w in warns)
+        assert not any("phase_g_summed" in w for w in warns)
 
     def test_warning_when_best_confidence_low(self):
         records = [self._rec(1_000_000_000, confidence="low")]
