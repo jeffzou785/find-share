@@ -25,6 +25,7 @@ from ..collectors.base import DataSource
 from ..indicators.growth import compute_deducted_ttm, compute_yoy_growth
 from ..indicators.valuation import compute_pe_pb_percentile
 from ..screening import MetricsSchema, ScreeningResult, Status
+from ..screening.period import period_report_date
 
 
 # 策略一目标行业（同时兼容申万 + EM2016 + 新浪 行业名）
@@ -56,6 +57,13 @@ DEFAULT_REVENUE_YOY_MIN = 0.10    # 营收同比 ≥ 10%（避免扣非高增但
 DEFAULT_GROSS_MARGIN_IMPROVEMENT = -0.005  # 毛利率同比下降 ≤ 0.5%（容忍小幅下降）
 DEFAULT_OCF_PER_SHARE_MIN = 0.0  # 每股经营现金流必须为正
 DEFAULT_DEDUCTED_TO_PARENT_MIN = 0.60  # 扣非净利 / 归母净利过低，说明利润质量存疑
+# 营运质量：比较同报告期同比增速，避免季节性和消费子行业的绝对周转差异。
+DEFAULT_RECEIVABLES_YOY_EXCESS_WATCH = 0.20
+DEFAULT_RECEIVABLES_YOY_EXCESS_REJECT = 0.50
+DEFAULT_INVENTORY_YOY_EXCESS_WATCH = 0.30
+DEFAULT_INVENTORY_YOY_EXCESS_REJECT = 0.80
+DEFAULT_SELLING_EXPENSE_RATIO_INCREASE_WATCH = 0.03
+DEFAULT_SELLING_EXPENSE_RATIO_INCREASE_REJECT = 0.08
 
 # P1.5-4：PE/PB 分位时间窗口支持 3y / 5y / 10y
 SUPPORTED_HISTORY_WINDOWS = (3, 5, 10)
@@ -100,6 +108,48 @@ def _to_float(value) -> Optional[float]:
         return None
 
 
+def _normalize_percent(value) -> Optional[float]:
+    """兼容 20.0=20% 与 0.20=20% 两类上游口径，统一转成小数。"""
+    v = _to_float(value)
+    if v is None:
+        return None
+    return v / 100.0 if abs(v) > 1 else v
+
+
+def _select_profit_growth_column(fin: pd.DataFrame) -> Optional[str]:
+    """策略一优先用扣非；扣非缺失时用归母/净利做 triage 代理。"""
+    for col in ("deducted_net_profit", "net_profit_attr_parent", "net_profit"):
+        if col in fin.columns and fin[col].notna().any():
+            return col
+    return None
+
+
+def _same_period_last_year_row(
+    financials: pd.DataFrame, latest: pd.Series
+) -> Optional[pd.Series]:
+    """返回与 latest 同报告期的去年记录（Q1/H1/Q3/年报均可比较）。"""
+    latest_date = pd.to_datetime(latest.get("report_date"), errors="coerce")
+    if pd.isna(latest_date):
+        return None
+    dates = pd.to_datetime(financials["report_date"], errors="coerce")
+    prior = financials.loc[
+        (dates.dt.year == latest_date.year - 1)
+        & (dates.dt.month == latest_date.month)
+    ]
+    return prior.sort_values("report_date").iloc[-1] if not prior.empty else None
+
+
+def _yoy_growth(current: Optional[float], prior: Optional[float]) -> Optional[float]:
+    """同比增长率，基数非正时不输出，避免不可解释的比例。"""
+    if current is None or prior is None or prior <= 0:
+        return None
+    return (current - prior) / prior
+
+
+def _format_extra(value: Optional[float]) -> str:
+    return "missing" if value is None else f"{value:.6f}"
+
+
 @dataclass
 class StrategyConfig:
     pe_percentile_max: float = DEFAULT_PE_PERCENTILE_MAX
@@ -121,6 +171,18 @@ class StrategyConfig:
     ocf_per_share_min: float = DEFAULT_OCF_PER_SHARE_MIN
     require_deducted_profit_quality: bool = True
     deducted_to_parent_min: float = DEFAULT_DEDUCTED_TO_PARENT_MIN
+    # P1：营运质量。先用同比背离做通用守卫，不使用跨行业绝对余额阈值。
+    require_working_capital_quality: bool = True
+    receivables_yoy_excess_watch: float = DEFAULT_RECEIVABLES_YOY_EXCESS_WATCH
+    receivables_yoy_excess_reject: float = DEFAULT_RECEIVABLES_YOY_EXCESS_REJECT
+    inventory_yoy_excess_watch: float = DEFAULT_INVENTORY_YOY_EXCESS_WATCH
+    inventory_yoy_excess_reject: float = DEFAULT_INVENTORY_YOY_EXCESS_REJECT
+    selling_expense_ratio_increase_watch: float = (
+        DEFAULT_SELLING_EXPENSE_RATIO_INCREASE_WATCH
+    )
+    selling_expense_ratio_increase_reject: float = (
+        DEFAULT_SELLING_EXPENSE_RATIO_INCREASE_REJECT
+    )
 
     def __post_init__(self) -> None:
         # P1.5-4：history_years 必须在支持窗口内
@@ -129,6 +191,17 @@ class StrategyConfig:
                 f"history_years 必须是 {SUPPORTED_HISTORY_WINDOWS} 之一，"
                 f"得到 {self.history_years!r}"
             )
+        for watch, reject, name in (
+            (self.receivables_yoy_excess_watch, self.receivables_yoy_excess_reject,
+             "receivables_yoy_excess"),
+            (self.inventory_yoy_excess_watch, self.inventory_yoy_excess_reject,
+             "inventory_yoy_excess"),
+            (self.selling_expense_ratio_increase_watch,
+             self.selling_expense_ratio_increase_reject,
+             "selling_expense_ratio_increase"),
+        ):
+            if watch < 0 or reject < watch:
+                raise ValueError(f"{name} 阈值必须满足 0 <= watch <= reject")
 
 
 def run_consumer_reversal(
@@ -229,6 +302,7 @@ def _evaluate_one_to_result(
     - P1-1：毛利率恶化（同比变化 < gross_margin_yoy_min）→ rejected, gross_margin_deteriorating
     - P1：每股经营现金流 ≤ 阈值 → rejected, cashflow_quality_failed
     - P1：扣非净利/归母净利过低 → rejected, deducted_profit_quality_failed
+    - P1：应收/存货增速显著高于收入、销售费用率异常抬升 → watch/rejected
     - 全部通过 → hit, all_thresholds_met
     - 代码异常 → error, 异常 message
 
@@ -277,13 +351,28 @@ def _evaluate_one_to_result(
                 **common, data_missing_reason="deducted_profit_missing", metrics=metrics
             )
 
-        if fin.empty or "deducted_net_profit" not in fin.columns:
+        # 运行历史报告期时，不能让本地最新财报穿越到目标期之后。
+        # legacy 入口 period="" 保留“使用最新数据”的既有语义。
+        target_report_date = period_report_date(period) if period else None
+        if target_report_date is not None and "report_date" in fin.columns:
+            dates = pd.to_datetime(fin["report_date"], errors="coerce")
+            fin = fin.loc[dates <= target_report_date].copy()
+
+        profit_col = _select_profit_growth_column(fin)
+        if fin.empty or profit_col is None:
             metrics.source_status.financials = "missing"
             return ScreeningResult.data_missing(
                 **common, data_missing_reason="deducted_profit_missing", metrics=metrics
             )
 
-        fin_ttm = compute_deducted_ttm(fin)
+        used_profit_proxy: Optional[str] = None
+        fin_for_growth = fin.copy()
+        if profit_col != "deducted_net_profit":
+            used_profit_proxy = profit_col
+            fin_for_growth["deducted_net_profit"] = fin_for_growth[profit_col]
+            metrics.source_status.extra["deducted_profit_proxy"] = profit_col
+
+        fin_ttm = compute_deducted_ttm(fin_for_growth)
         fin_growth = compute_yoy_growth(fin_ttm, "deducted_ttm")
         if fin_growth.empty:
             metrics.source_status.financials = "missing"
@@ -312,41 +401,26 @@ def _evaluate_one_to_result(
             for w in SUPPORTED_HISTORY_WINDOWS
         }
         pb_stat = pb_stats[config.history_years]
-        # 营收同比：AkShare stock_financial_abstract 的"营业总收入增长率"是百分数
-        # （如 15.66 = 15.66%），统一除以 100 转小数。
-        revenue_yoy = latest.get("revenue_yoy")
-        revenue_yoy_f: Optional[float] = None
-        if pd.notna(revenue_yoy):
-            try:
-                revenue_yoy_f = float(revenue_yoy) / 100.0
-            except (ValueError, TypeError):
-                revenue_yoy_f = None
-        # 毛利率同比变化：gross_margin 也是百分数（91.96 = 91.96%），
-        # 转小数后相减，结果单位为小数（-0.005 = -0.5pp），跟 gross_margin_yoy_min 对齐。
+        # 营收同比/毛利率：AkShare 常见口径为 15.66=15.66%，
+        # 新浪/skill 侧可能已是 0.1566；统一归一成小数。
+        revenue_yoy_f = _normalize_percent(latest.get("revenue_yoy"))
         gross_margin_now_raw = latest.get("gross_margin")
-        gross_margin_now: Optional[float] = (
-            float(gross_margin_now_raw) / 100.0
-            if pd.notna(gross_margin_now_raw) else None
-        )
+        gross_margin_now = _normalize_percent(gross_margin_now_raw)
+        prior_same_period = _same_period_last_year_row(fin_growth_sorted, latest)
         gross_margin_yoy_change: Optional[float] = None
         if gross_margin_now is not None:
-            latest_report_date = pd.to_datetime(latest.get("report_date"))
-            prev_year = latest_report_date.year - 1
-            prev_row = fin_growth_sorted[
-                (pd.to_datetime(fin_growth_sorted["report_date"]).dt.year == prev_year)
-                & (pd.to_datetime(fin_growth_sorted["report_date"]).dt.month == 12)
-            ]
-            if not prev_row.empty:
-                prev_gm_raw = prev_row.iloc[-1].get("gross_margin")
-                if pd.notna(prev_gm_raw):
-                    gross_margin_yoy_change = (
-                        gross_margin_now - float(prev_gm_raw) / 100.0
-                    )
+            if prior_same_period is not None:
+                prev_gm_raw = prior_same_period.get("gross_margin")
+                prev_gm = _normalize_percent(prev_gm_raw)
+                if prev_gm is not None:
+                    gross_margin_yoy_change = gross_margin_now - prev_gm
         ocf_per_share = _to_float(latest.get("ocf_per_share"))
         net_profit_base = _to_float(latest.get("net_profit_attr_parent"))
         if net_profit_base is None:
             net_profit_base = _to_float(latest.get("net_profit"))
-        deducted_profit = _to_float(latest.get("deducted_net_profit"))
+        deducted_profit = (
+            None if used_profit_proxy else _to_float(latest.get("deducted_net_profit"))
+        )
         deducted_to_parent: Optional[float] = None
         if (
             deducted_profit is not None
@@ -354,6 +428,52 @@ def _evaluate_one_to_result(
             and net_profit_base > 0
         ):
             deducted_to_parent = deducted_profit / net_profit_base
+
+        # 营运质量只比较同报告期：应收/存货是时点数，收入/销售费用是累计数；
+        # 与去年同一累计口径比较可同时覆盖年报、半年报和季报。
+        revenue_for_quality = _to_float(latest.get("revenue"))
+        prior_revenue = (
+            _to_float(prior_same_period.get("revenue"))
+            if prior_same_period is not None else None
+        )
+        revenue_yoy_quality = _yoy_growth(revenue_for_quality, prior_revenue)
+        if revenue_yoy_quality is None:
+            revenue_yoy_quality = revenue_yoy_f
+        receivables_yoy = _yoy_growth(
+            _to_float(latest.get("accounts_receivable")),
+            _to_float(prior_same_period.get("accounts_receivable"))
+            if prior_same_period is not None else None,
+        )
+        inventory_yoy = _yoy_growth(
+            _to_float(latest.get("inventory")),
+            _to_float(prior_same_period.get("inventory"))
+            if prior_same_period is not None else None,
+        )
+        receivables_yoy_excess = (
+            receivables_yoy - revenue_yoy_quality
+            if receivables_yoy is not None and revenue_yoy_quality is not None
+            else None
+        )
+        inventory_yoy_excess = (
+            inventory_yoy - revenue_yoy_quality
+            if inventory_yoy is not None and revenue_yoy_quality is not None
+            else None
+        )
+        selling_expense_ratio = None
+        prior_selling_expense_ratio = None
+        if revenue_for_quality is not None and revenue_for_quality > 0:
+            selling_expense = _to_float(latest.get("selling_expense"))
+            if selling_expense is not None:
+                selling_expense_ratio = selling_expense / revenue_for_quality
+        if prior_same_period is not None and prior_revenue is not None and prior_revenue > 0:
+            prior_selling_expense = _to_float(prior_same_period.get("selling_expense"))
+            if prior_selling_expense is not None:
+                prior_selling_expense_ratio = prior_selling_expense / prior_revenue
+        selling_expense_ratio_yoy_change = (
+            selling_expense_ratio - prior_selling_expense_ratio
+            if selling_expense_ratio is not None
+            and prior_selling_expense_ratio is not None else None
+        )
 
         # 5. 填充 metrics
         # P1.5-4：所有窗口的分位都写入；阈值用 config.history_years 选的窗口
@@ -373,6 +493,17 @@ def _evaluate_one_to_result(
             metrics.source_status.extra["ocf_per_share"] = f"{ocf_per_share:.6f}"
         if deducted_to_parent is not None:
             metrics.source_status.extra["deducted_to_parent_profit"] = f"{deducted_to_parent:.6f}"
+        metrics.source_status.extra.update({
+            "revenue_yoy_quality_base": _format_extra(revenue_yoy_quality),
+            "accounts_receivable_yoy": _format_extra(receivables_yoy),
+            "accounts_receivable_yoy_excess": _format_extra(receivables_yoy_excess),
+            "inventory_yoy": _format_extra(inventory_yoy),
+            "inventory_yoy_excess": _format_extra(inventory_yoy_excess),
+            "selling_expense_ratio": _format_extra(selling_expense_ratio),
+            "selling_expense_ratio_yoy_change": _format_extra(
+                selling_expense_ratio_yoy_change
+            ),
+        })
 
         # 6. 应用硬阈值，返回对应状态
         if pe_stat["percentile"] > config.pe_percentile_max:
@@ -429,6 +560,11 @@ def _evaluate_one_to_result(
                     **common, reject_reason="cashflow_quality_failed", metrics=metrics
                 )
 
+        if used_profit_proxy:
+            return ScreeningResult.watch(
+                **common, watch_reason="data_warning", metrics=metrics
+            )
+
         if config.require_deducted_profit_quality:
             if deducted_to_parent is None:
                 return ScreeningResult.watch(
@@ -440,6 +576,55 @@ def _evaluate_one_to_result(
                     reject_reason="deducted_profit_quality_failed",
                     metrics=metrics,
                 )
+
+        # P1：营运质量。先保留明确的 reject reason；临界恶化降为 watch，
+        # 指标缺失仅写入 metrics，避免历史未回填样本被机械降级。
+        if config.require_working_capital_quality:
+            if receivables_yoy_excess is not None:
+                if receivables_yoy_excess >= config.receivables_yoy_excess_reject:
+                    return ScreeningResult.rejected(
+                        **common,
+                        reject_reason="receivables_growth_excessive",
+                        metrics=metrics,
+                    )
+                if receivables_yoy_excess >= config.receivables_yoy_excess_watch:
+                    return ScreeningResult.watch(
+                        **common,
+                        watch_reason="receivables_growth_warning",
+                        metrics=metrics,
+                    )
+            if inventory_yoy_excess is not None:
+                if inventory_yoy_excess >= config.inventory_yoy_excess_reject:
+                    return ScreeningResult.rejected(
+                        **common,
+                        reject_reason="inventory_growth_excessive",
+                        metrics=metrics,
+                    )
+                if inventory_yoy_excess >= config.inventory_yoy_excess_watch:
+                    return ScreeningResult.watch(
+                        **common,
+                        watch_reason="inventory_growth_warning",
+                        metrics=metrics,
+                    )
+            if selling_expense_ratio_yoy_change is not None:
+                if (
+                    selling_expense_ratio_yoy_change
+                    >= config.selling_expense_ratio_increase_reject
+                ):
+                    return ScreeningResult.rejected(
+                        **common,
+                        reject_reason="selling_expense_ratio_rising",
+                        metrics=metrics,
+                    )
+                if (
+                    selling_expense_ratio_yoy_change
+                    >= config.selling_expense_ratio_increase_watch
+                ):
+                    return ScreeningResult.watch(
+                        **common,
+                        watch_reason="selling_expense_ratio_warning",
+                        metrics=metrics,
+                    )
 
         return ScreeningResult.hit(
             **common, hit_reason="all_thresholds_met", metrics=metrics

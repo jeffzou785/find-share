@@ -72,6 +72,7 @@ ITEM_CN_MAP: dict[str, str] = {
     "所得税费用": "income_tax_expense",
     "净利润": "net_profit",
     "归属于母公司股东的净利润": "net_profit_attr_parent",
+    "归属于母公司所有者的净利润": "net_profit_attr_parent",
     "扣除非经常性损益后的净利润": "deducted_net_profit",
     "基本每股收益": "eps_basic",
     "稀释每股收益": "eps_diluted",

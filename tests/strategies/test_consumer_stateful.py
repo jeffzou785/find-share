@@ -186,6 +186,33 @@ class TestEvaluateConsumerFull:
         assert r.metrics.valuation.pe_ttm == 10.0
         assert r.metrics.growth.deducted_profit_yoy_ttm == pytest.approx(0.6, abs=1e-3)
 
+    def test_period_excludes_future_financials(self, base_candidates):
+        """回放 2025A 时不能使用本地已缓存的 2026Q1。"""
+        fin = _financials_basic([
+            (2023, 12, 100.0), (2024, 12, 50.0), (2025, 12, 80.0),
+        ])
+        # 缺少 2025Q1 时，若错误使用这一行，Q1 TTM 无法计算并会 data_missing。
+        fin = pd.concat([
+            fin,
+            pd.DataFrame([{
+                "report_date": pd.Timestamp(2026, 3, 31),
+                "deducted_net_profit": 10.0, "revenue": 100.0,
+                "net_profit_attr_parent": 11.0, "net_profit": 11.0,
+                "revenue_yoy": 20.0, "gross_margin": 32.0,
+                "ocf_per_share": 1.0,
+            }]),
+        ], ignore_index=True)
+        source = MockSource(pe_hist=_pe_history(120, value=10.0), fin=fin)
+
+        result = evaluate_consumer_full(
+            source=source, candidates=base_candidates,
+            run_id="r1", period="2025A", show_progress=False,
+            config=StrategyConfig(min_history_samples=100),
+        )[0]
+
+        assert result.status == Status.HIT
+        assert result.metrics.growth.deducted_profit_yoy_ttm == pytest.approx(0.6, abs=1e-3)
+
     def test_metrics_source_status_reflects_failure(self, base_candidates):
         source = MockSource(pe_hist=None, fin=_financials_basic([]))
         results = evaluate_consumer_full(
@@ -302,6 +329,43 @@ class TestP11NewSignals:
         # metrics 已转小数
         assert r.metrics.growth.revenue_yoy == pytest.approx(0.05, abs=1e-6)
 
+    def test_decimal_percent_fields_from_skill_source_hit(self, base_candidates):
+        """兼容 skill/Sina 已转小数的 revenue_yoy/gross_margin 口径。"""
+        fin = _financials_basic([
+            (2023, 12, 100.0), (2024, 12, 50.0), (2025, 12, 80.0),
+        ])
+        fin["revenue_yoy"] = 0.20
+        fin["gross_margin"] = [0.30, 0.31, 0.32]
+        source = MockSource(pe_hist=_pe_history(120, value=10.0), fin=fin)
+        results = evaluate_consumer_full(
+            source=source, candidates=base_candidates,
+            run_id="r1", period="2025A", show_progress=False,
+            config=StrategyConfig(min_history_samples=100),
+        )
+        r = results[0]
+        assert r.status == Status.HIT
+        assert r.metrics.growth.revenue_yoy == pytest.approx(0.20, abs=1e-6)
+        assert r.metrics.quality.gross_margin == pytest.approx(0.32, abs=1e-6)
+
+    def test_net_profit_proxy_when_deducted_missing_goes_to_watch(self, base_candidates):
+        """扣非缺失时可用归母净利代理增长做 triage，但不能直接 hit。"""
+        fin = _financials_basic([
+            (2023, 12, 100.0), (2024, 12, 50.0), (2025, 12, 80.0),
+        ]).drop(columns=["deducted_net_profit"])
+        source = MockSource(pe_hist=_pe_history(120, value=10.0), fin=fin)
+
+        results = evaluate_consumer_full(
+            source=source, candidates=base_candidates,
+            run_id="r1", period="2025A", show_progress=False,
+            config=StrategyConfig(min_history_samples=100),
+        )
+
+        r = results[0]
+        assert r.status == Status.WATCH
+        assert r.watch_reason == "data_warning"
+        assert r.metrics.source_status.extra["deducted_profit_proxy"] == "net_profit_attr_parent"
+        assert r.metrics.growth.deducted_profit_yoy_ttm == pytest.approx(0.6, abs=1e-3)
+
     def test_revenue_yoy_missing_goes_to_watch(self, base_candidates):
         """revenue_yoy 字段缺失 → watch data_warning（不直接剔除）。"""
         fin = pd.DataFrame([
@@ -412,6 +476,123 @@ class TestP11NewSignals:
         )
         r = results[0]
         assert r.status == Status.HIT
+
+
+class TestP1WorkingCapitalQuality:
+    """P1：应收/存货/销售费用率以同比背离方式守卫。"""
+
+    @staticmethod
+    def _source_with_working_capital(
+        *,
+        latest_receivables: float = 100.0,
+        latest_inventory: float = 100.0,
+        latest_selling_expense: float = 100.0,
+    ) -> MockSource:
+        fin = _financials_basic([
+            (2023, 12, 100.0), (2024, 12, 50.0), (2025, 12, 80.0),
+        ])
+        # 2024 -> 2025 收入同比为 60%；以下字段与收入同口径比较。
+        fin["accounts_receivable"] = [100.0, 100.0, latest_receivables]
+        fin["inventory"] = [100.0, 100.0, latest_inventory]
+        fin["selling_expense"] = [100.0, 100.0, latest_selling_expense]
+        return MockSource(pe_hist=_pe_history(120, value=10.0), fin=fin)
+
+    def _result(self, base_candidates, **kwargs):
+        return evaluate_consumer_full(
+            source=self._source_with_working_capital(**kwargs),
+            candidates=base_candidates, run_id="r1", period="2025A",
+            show_progress=False, config=StrategyConfig(min_history_samples=100),
+        )[0]
+
+    def test_receivables_growth_excess_goes_to_watch(self, base_candidates):
+        # 应收同比 +100%，收入同比 +60%，高出 40pp：watch。
+        r = self._result(base_candidates, latest_receivables=200.0)
+        assert r.status == Status.WATCH
+        assert r.watch_reason == "receivables_growth_warning"
+        assert r.metrics.source_status.extra["accounts_receivable_yoy_excess"] == "0.400000"
+
+    def test_receivables_growth_excessive_rejected(self, base_candidates):
+        # 应收同比 +150%，收入同比 +60%，高出 90pp：rejected。
+        r = self._result(base_candidates, latest_receivables=250.0)
+        assert r.status == Status.REJECTED
+        assert r.reject_reason == "receivables_growth_excessive"
+
+    def test_inventory_growth_excess_goes_to_watch(self, base_candidates):
+        r = self._result(base_candidates, latest_inventory=200.0)
+        assert r.status == Status.WATCH
+        assert r.watch_reason == "inventory_growth_warning"
+        assert r.metrics.source_status.extra["inventory_yoy_excess"] == "0.400000"
+
+    def test_inventory_growth_excessive_rejected(self, base_candidates):
+        r = self._result(base_candidates, latest_inventory=400.0)
+        assert r.status == Status.REJECTED
+        assert r.reject_reason == "inventory_growth_excessive"
+
+    def test_selling_expense_ratio_rise_goes_to_watch(self, base_candidates):
+        # 费用率从 20% 升至 25%，上升 5pp：watch。
+        r = self._result(base_candidates, latest_selling_expense=200.0)
+        assert r.status == Status.WATCH
+        assert r.watch_reason == "selling_expense_ratio_warning"
+        assert r.metrics.source_status.extra["selling_expense_ratio_yoy_change"] == "0.050000"
+
+    def test_selling_expense_ratio_rising_rejected(self, base_candidates):
+        r = self._result(base_candidates, latest_selling_expense=300.0)
+        assert r.status == Status.REJECTED
+        assert r.reject_reason == "selling_expense_ratio_rising"
+
+    def test_missing_working_capital_fields_do_not_demote_hit(self, base_candidates):
+        """老库尚未回填新字段时保留原筛选结果，只在 metrics 留 missing。"""
+        source = MockSource(
+            pe_hist=_pe_history(120, value=10.0),
+            fin=_financials_basic([
+                (2023, 12, 100.0), (2024, 12, 50.0), (2025, 12, 80.0),
+            ]),
+        )
+        r = evaluate_consumer_full(
+            source=source, candidates=base_candidates,
+            run_id="r1", period="2025A", show_progress=False,
+            config=StrategyConfig(min_history_samples=100),
+        )[0]
+        assert r.status == Status.HIT
+        assert r.metrics.source_status.extra["accounts_receivable_yoy"] == "missing"
+
+    def test_q1_uses_prior_q1_not_prior_annual_for_gross_margin(self, base_candidates):
+        """季报毛利率应对齐去年 Q1，不能与去年年报交叉比较。"""
+        fin = pd.DataFrame([
+            {"report_date": "2024-03-31", "deducted_net_profit": 10.0,
+             "revenue": 80.0, "revenue_yoy": 20.0, "gross_margin": 30.0,
+             "ocf_per_share": 1.0, "net_profit_attr_parent": 11.0},
+            {"report_date": "2024-12-31", "deducted_net_profit": 100.0,
+             "revenue": 800.0, "revenue_yoy": 20.0, "gross_margin": 30.0,
+             "ocf_per_share": 1.0, "net_profit_attr_parent": 110.0},
+            {"report_date": "2025-03-31", "deducted_net_profit": 5.0,
+             "revenue": 100.0, "revenue_yoy": 20.0, "gross_margin": 30.0,
+             "ocf_per_share": 1.0, "net_profit_attr_parent": 5.5},
+            {"report_date": "2025-12-31", "deducted_net_profit": 50.0,
+             "revenue": 500.0, "revenue_yoy": 20.0, "gross_margin": 50.0,
+             "ocf_per_share": 1.0, "net_profit_attr_parent": 55.0},
+            {"report_date": "2026-03-31", "deducted_net_profit": 70.0,
+             "revenue": 120.0, "revenue_yoy": 20.0, "gross_margin": 30.0,
+             "ocf_per_share": 1.0, "net_profit_attr_parent": 77.0},
+        ])
+        r = evaluate_consumer_full(
+            source=MockSource(pe_hist=_pe_history(120, value=10.0), fin=fin),
+            candidates=base_candidates, run_id="r1", period="2026Q1",
+            show_progress=False,
+            config=StrategyConfig(
+                min_history_samples=100, deducted_yoy_min=-1.0,
+                require_reversal_check=False,
+            ),
+        )[0]
+        assert r.status == Status.HIT
+        assert r.metrics.quality.gross_margin == pytest.approx(0.30)
+
+    def test_invalid_working_capital_thresholds_rejected(self):
+        with pytest.raises(ValueError, match="receivables_yoy_excess"):
+            StrategyConfig(
+                receivables_yoy_excess_watch=0.5,
+                receivables_yoy_excess_reject=0.2,
+            )
 
 
 class TestP15MultiWindowPercentile:

@@ -23,6 +23,7 @@ PHARMA_SW_FIRST = ("医药生物",)
 
 VBP_RECOVERY_KEYWORDS = (
     "化学制剂",
+    "化学制药",
     "化学原料药",
     "中药",
     "中成药",
@@ -163,9 +164,11 @@ def _to_float(value) -> float | None:
 
 
 def _normalize_percent(value) -> float | None:
-    """financials 表百分数口径转小数；缺失返回 None。"""
+    """financials 同比口径转小数；兼容 10.0=10% 和 0.10=10%。"""
     v = _to_float(value)
-    return None if v is None else v / 100.0
+    if v is None:
+        return None
+    return v / 100.0 if abs(v) > 1 else v
 
 
 def _pick_financial_row(financials: pd.DataFrame, report_date: pd.Timestamp):
@@ -378,10 +381,6 @@ def evaluate_vbp_recovery_one(
         sina_industry=candidate.get("sina_industry"),
         business_tags=candidate.get("business_tags") or candidate.get("em2016"),
     )
-    if classification is None or classification.sub_strategy != "vbp_recovery":
-        return ScreeningResult.rejected(
-            **common, reject_reason="not_vbp_recovery_pool",
-        )
 
     report_date = period_report_date(period)
     if report_date is None:
@@ -390,6 +389,26 @@ def evaluate_vbp_recovery_one(
         )
 
     event = _pick_vbp_event(vbp_events, report_date)
+    if classification is None and event is not None:
+        # 行业二级分类有时过粗（如"生物医药"），但 VBP 事件本身的
+        # 产品名能明确指向 IVD/耗材/仿制药，允许作为归类辅助证据。
+        event_tags = _join_industry_text(
+            candidate.get("business_tags"),
+            candidate.get("em2016"),
+            event.get("product_name"),
+            event.get("vbp_batch"),
+            event.get("evidence_text"),
+        )
+        classification = classify_pharma_sub_strategy(
+            sw_first=candidate.get("sw_first"),
+            sw_second=candidate.get("sw_second"),
+            sina_industry=candidate.get("sina_industry"),
+            business_tags=event_tags,
+        )
+    if classification is None or classification.sub_strategy != "vbp_recovery":
+        return ScreeningResult.rejected(
+            **common, reject_reason="not_vbp_recovery_pool",
+        )
     if event is None:
         return ScreeningResult.data_missing(
             **common, data_missing_reason="vbp_event_missing",

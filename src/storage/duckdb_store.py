@@ -86,6 +86,9 @@ CREATE TABLE IF NOT EXISTS financials (
     code VARCHAR,
     report_date DATE,
     revenue DOUBLE,
+    accounts_receivable DOUBLE,
+    inventory DOUBLE,
+    selling_expense DOUBLE,
     net_profit DOUBLE,
     net_profit_attr_parent DOUBLE,
     deducted_net_profit DOUBLE,
@@ -303,7 +306,15 @@ class DuckDBStore:
         self._migrate()
 
     def _migrate(self) -> None:
-        """前向迁移：扩列 disclosures / overseas_revenue。只 ADD COLUMN，不破坏旧数据。"""
+        """前向迁移：只 ADD COLUMN，不破坏旧数据。"""
+        # 策略一营运质量字段：来自新浪三表，供策略一的应收/存货/费用率检查使用。
+        self._add_column_if_missing(
+            "financials", "accounts_receivable", "DOUBLE"
+        )
+        self._add_column_if_missing("financials", "inventory", "DOUBLE")
+        self._add_column_if_missing(
+            "financials", "selling_expense", "DOUBLE"
+        )
         self._add_column_if_missing(
             "disclosures", "report_type", "VARCHAR"
         )
@@ -442,12 +453,32 @@ class DuckDBStore:
         df["code"] = code
         df["report_date"] = pd.to_datetime(df["report_date"]).dt.date
         cols = [
-            "code", "report_date", "revenue", "net_profit",
+            "code", "report_date", "revenue", "accounts_receivable",
+            "inventory", "selling_expense", "net_profit",
             "net_profit_attr_parent", "deducted_net_profit",
             "gross_margin", "revenue_yoy", "net_profit_yoy",
             "roe", "ocf_per_share",
         ]
-        df = df[[c for c in cols if c in df.columns]]
+        # 不同上游覆盖的字段不同。写入局部摘要时保留同报告期既有的非空值，
+        # 避免例如 AkShare 摘要覆盖掉新浪三表已解析的应收/存货/销售费用。
+        for col in cols:
+            if col not in df.columns:
+                df[col] = None
+        existing = self.load_financials(code)
+        if not existing.empty:
+            existing = existing.copy()
+            existing["report_date"] = pd.to_datetime(
+                existing["report_date"]
+            ).dt.date
+            existing_by_date = existing.drop_duplicates(
+                subset=["report_date"], keep="last"
+            ).set_index("report_date")
+            for col in cols:
+                if col in {"code", "report_date"} or col not in existing_by_date:
+                    continue
+                prior = df["report_date"].map(existing_by_date[col])
+                df[col] = df[col].where(df[col].notna(), prior)
+        df = df[cols]
         self.upert_dataframe("financials", df)
 
     def load_financials(self, code: str) -> pd.DataFrame:

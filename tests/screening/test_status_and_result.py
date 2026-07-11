@@ -49,6 +49,9 @@ class TestReasonCodes:
             # P1 策略一经营质量
             "cashflow_quality_failed",
             "deducted_profit_quality_failed",
+            "receivables_growth_excessive",
+            "inventory_growth_excessive",
+            "selling_expense_ratio_rising",
         }
         assert REJECT_CONSUMER == expected
 
@@ -68,6 +71,9 @@ class TestReasonCodes:
         assert "parse_warning" in WATCH_REASONS
         assert "consensus_missing" in WATCH_REASONS
         assert "near_threshold" in WATCH_REASONS
+        assert "receivables_growth_warning" in WATCH_REASONS
+        assert "inventory_growth_warning" in WATCH_REASONS
+        assert "selling_expense_ratio_warning" in WATCH_REASONS
 
     def test_data_missing_reasons_include_pdf(self):
         assert "pdf_not_downloaded" in DATA_MISSING_REASONS

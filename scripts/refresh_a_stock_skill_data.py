@@ -109,7 +109,7 @@ def refresh_financials(store: DuckDBStore, source: AStockSkillSource, codes: lis
             counts["error"] += 1
 
         try:
-            full = source.get_financials_full(code, num=8)
+            full = source.get_financials_full(code, num=9)
             if not full.empty:
                 counts["financials_full_rows"] += store.save_financials_full(full)
             abstract = financials_full_to_abstract(full)

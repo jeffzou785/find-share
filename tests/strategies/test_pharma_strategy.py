@@ -133,6 +133,50 @@ def test_evaluate_vbp_recovery_hit_when_financials_recover():
     assert result.metrics.source_status.extra["vbp_status"] == "won"
 
 
+def test_evaluate_vbp_recovery_accepts_decimal_yoy_from_a_stock_source():
+    result = evaluate_vbp_recovery_one(
+        candidate=_candidate(),
+        financials=_financials(revenue_yoy=0.12, net_profit_yoy=0.08),
+        vbp_events=_vbp_events(),
+        run_id="r1",
+        period="2026Q1",
+    )
+    assert result.status == Status.HIT
+    assert result.metrics.growth.revenue_yoy == 0.12
+    assert result.metrics.growth.net_profit_yoy == 0.08
+
+
+def test_vbp_event_product_can_classify_broad_biomedicine_industry():
+    candidate = {
+        "code": "603658",
+        "name": "安图生物",
+        "sw_first": "医药生物",
+        "sw_second": "生物医药",
+    }
+    events = pd.DataFrame([
+        {
+            "code": "603658",
+            "name": "安图生物",
+            "product_name": "体外诊断试剂",
+            "vbp_batch": "IVD省际联盟集采",
+            "vbp_status": "unknown",
+            "tender_date": "2025-01-01",
+            "source_url": "https://example.com",
+            "evidence_text": "体外诊断试剂集采",
+        }
+    ])
+    result = evaluate_vbp_recovery_one(
+        candidate=candidate,
+        financials=_financials(),
+        vbp_events=events,
+        run_id="r1",
+        period="2026Q1",
+    )
+    assert result.status == Status.WATCH
+    assert result.watch_reason == "vbp_status_unknown"
+    assert result.metrics.source_status.extra["matched_keyword"] == "体外诊断"
+
+
 def test_evaluate_vbp_recovery_high_pb_percentile_downgrades_hit_to_watch():
     result = evaluate_vbp_recovery_one(
         candidate=_candidate(),

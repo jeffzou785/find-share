@@ -74,8 +74,8 @@ class AStockSkillSource:
         full = self.get_financials_full(code)
         return financials_full_to_abstract(full)
 
-    def get_financials_full(self, code: str, num: int = 8) -> pd.DataFrame:
-        """返回新浪三表长格式，便于直接写 `financials_full`。"""
+    def get_financials_full(self, code: str, num: int = 9) -> pd.DataFrame:
+        """返回新浪三表长格式，默认覆盖 2024Q1 至 2026Q1 的 9 个报告期。"""
         return self.sina_source.get_all_statements(normalize_code(code), num=num)
 
 
@@ -147,6 +147,9 @@ def financials_full_to_abstract(full: pd.DataFrame) -> pd.DataFrame:
         rows.append({
             "report_date": report_date,
             "revenue": revenue,
+            "accounts_receivable": _first_not_none(values, "accounts_receivable"),
+            "inventory": _first_not_none(values, "inventory"),
+            "selling_expense": _first_not_none(values, "selling_expense"),
             "net_profit": _first_not_none(values, "net_profit"),
             "net_profit_attr_parent": _first_not_none(values, "net_profit_attr_parent"),
             "deducted_net_profit": _first_not_none(values, "deducted_net_profit"),

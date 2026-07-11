@@ -9,6 +9,7 @@ from src.collectors.a_stock_skill_source import (
     financials_full_to_abstract,
     tencent_quote_one,
 )
+from src.collectors.sina_impl import ITEM_CN_MAP
 
 
 class _FakeResponse:
@@ -56,6 +57,9 @@ def test_financials_full_to_abstract_derives_core_fields():
         {"report_date": "2026-03-31", "item_en": "net_profit", "value": 120.0, "value_yoy": 30.0},
         {"report_date": "2026-03-31", "item_en": "net_profit_attr_parent", "value": 110.0, "value_yoy": 28.0},
         {"report_date": "2026-03-31", "item_en": "deducted_net_profit", "value": 90.0, "value_yoy": 35.0},
+        {"report_date": "2026-03-31", "item_en": "accounts_receivable", "value": 120.0, "value_yoy": None},
+        {"report_date": "2026-03-31", "item_en": "inventory", "value": 200.0, "value_yoy": None},
+        {"report_date": "2026-03-31", "item_en": "selling_expense", "value": 80.0, "value_yoy": None},
         {"report_date": "2026-03-31", "item_en": "ocf_net", "value": 80.0, "value_yoy": None},
         {"report_date": "2026-03-31", "item_en": "share_capital", "value": 160.0, "value_yoy": None},
     ])
@@ -69,6 +73,14 @@ def test_financials_full_to_abstract_derives_core_fields():
     assert row["net_profit_attr_parent"] == pytest.approx(110.0)
     assert row["deducted_net_profit"] == pytest.approx(90.0)
     assert row["ocf_per_share"] == pytest.approx(0.5)
+    assert row["accounts_receivable"] == pytest.approx(120.0)
+    assert row["inventory"] == pytest.approx(200.0)
+    assert row["selling_expense"] == pytest.approx(80.0)
+
+
+def test_sina_parent_profit_aliases_map_to_same_field():
+    assert ITEM_CN_MAP["归属于母公司股东的净利润"] == "net_profit_attr_parent"
+    assert ITEM_CN_MAP["归属于母公司所有者的净利润"] == "net_profit_attr_parent"
 
 
 def test_financials_full_to_abstract_does_not_use_total_cost_as_gross_margin():
@@ -82,18 +94,24 @@ def test_financials_full_to_abstract_does_not_use_total_cost_as_gross_margin():
     assert pd.isna(row["gross_margin"])
 
 
-def test_a_stock_skill_source_uses_sina_full_for_abstract():
+def test_a_stock_skill_source_uses_recent_nine_periods_for_abstract():
     class MockSina:
+        def __init__(self):
+            self.num = None
+
         def get_all_statements(self, code: str, num: int = 8):
+            self.num = num
             return pd.DataFrame([
                 {"report_date": "2025-12-31", "item_en": "revenue", "value": 2000.0, "value_yoy": 10.0},
                 {"report_date": "2025-12-31", "item_en": "gross_margin", "value": 30.0, "value_yoy": None},
                 {"report_date": "2025-12-31", "item_en": "deducted_net_profit", "value": 180.0, "value_yoy": 40.0},
             ])
 
-    source = AStockSkillSource(sina_source=MockSina())
+    mock = MockSina()
+    source = AStockSkillSource(sina_source=mock)
     abstract = source.get_financial_abstract("000001")
     assert len(abstract) == 1
+    assert mock.num == 9
     assert abstract.iloc[0]["revenue"] == pytest.approx(2000.0)
     assert abstract.iloc[0]["gross_margin"] == pytest.approx(30.0)
     assert abstract.iloc[0]["deducted_net_profit"] == pytest.approx(180.0)

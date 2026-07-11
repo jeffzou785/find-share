@@ -23,6 +23,8 @@
 - pharma-gt     校验策略二 ground truth
 - pharma-template 初始化策略二 CSV 模板
 - pharma-screen 策略二A 集采修复型筛选
+- pharma-review 策略二A ground truth 复盘
+- parser-review 策略三海外收入 parser 质量池
 - global-map    导入 A/H/港股代码映射
 
 用法示例：
@@ -68,6 +70,8 @@ SUBCOMMAND_SCRIPTS: dict[str, str] = {
     "pharma-gt": str(SCRIPTS_DIR / "validate_pharma_ground_truth.py"),
     "pharma-template": str(SCRIPTS_DIR / "init_pharma_templates.py"),
     "pharma-screen": str(SCRIPTS_DIR / "run_pharma_vbp_recovery.py"),
+    "pharma-review": str(SCRIPTS_DIR / "review_pharma_ground_truth.py"),
+    "parser-review": str(SCRIPTS_DIR / "review_overseas_parser_quality.py"),
     "global-map": str(SCRIPTS_DIR / "import_global_stock_mappings.py"),
     # P2-3 监控
     "monitor": str(SCRIPTS_DIR / "monitor_changes.py"),

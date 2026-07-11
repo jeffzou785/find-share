@@ -55,6 +55,9 @@ REJECT_CONSUMER = {
     # P1 策略一经营质量
     "cashflow_quality_failed",
     "deducted_profit_quality_failed",
+    "receivables_growth_excessive",
+    "inventory_growth_excessive",
+    "selling_expense_ratio_rising",
 }
 
 # === 策略三 reject_reason ===
@@ -76,6 +79,9 @@ WATCH_REASONS = {
     "low_report_coverage",  # 研报覆盖不足
     "weak_price_confirmation",  # 价格未确认基本面
     "data_warning",         # 估算或低可信解析
+    "receivables_growth_warning",
+    "inventory_growth_warning",
+    "selling_expense_ratio_warning",
 }
 
 # === data_missing_reason ===

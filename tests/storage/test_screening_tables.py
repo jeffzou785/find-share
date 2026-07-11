@@ -103,6 +103,41 @@ class TestSchemaMigration:
         assert row["sw_second"] == "化学制剂"
         assert row["em2016"] == "医药生物-化学制药-化学制剂"
 
+    def test_financials_working_capital_columns_round_trip(self, store):
+        rows = store.conn.execute("PRAGMA table_info(financials)").fetchall()
+        cols = {r[1] for r in rows}
+        assert {"accounts_receivable", "inventory", "selling_expense"} <= cols
+
+        store.save_financials("600031", pd.DataFrame([{
+            "report_date": "2025-12-31", "revenue": 1000.0,
+            "accounts_receivable": 120.0, "inventory": 160.0,
+            "selling_expense": 80.0,
+        }]))
+        row = store.load_financials("600031").iloc[0]
+        assert row["accounts_receivable"] == pytest.approx(120.0)
+        assert row["inventory"] == pytest.approx(160.0)
+        assert row["selling_expense"] == pytest.approx(80.0)
+
+    def test_financials_partial_upsert_preserves_existing_non_null_values(self, store):
+        """多源摘要写同报告期时，局部字段不能清空新浪三表已解析的质量数据。"""
+        store.save_financials("600031", pd.DataFrame([{
+            "report_date": "2025-12-31", "revenue": 1000.0,
+            "accounts_receivable": 120.0, "inventory": 160.0,
+            "selling_expense": 80.0,
+        }]))
+        # 模拟不含三项明细的第二来源（例如历史 AkShare 摘要）。
+        store.save_financials("600031", pd.DataFrame([{
+            "report_date": "2025-12-31", "revenue": 1100.0,
+            "gross_margin": 30.0,
+        }]))
+
+        row = store.load_financials("600031").iloc[0]
+        assert row["revenue"] == pytest.approx(1100.0)
+        assert row["gross_margin"] == pytest.approx(30.0)
+        assert row["accounts_receivable"] == pytest.approx(120.0)
+        assert row["inventory"] == pytest.approx(160.0)
+        assert row["selling_expense"] == pytest.approx(80.0)
+
     def test_backtest_results_columns(self, store):
         rows = store.conn.execute("PRAGMA table_info(backtest_results)").fetchall()
         cols = {r[1] for r in rows}

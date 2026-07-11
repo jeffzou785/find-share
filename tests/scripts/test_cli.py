@@ -35,7 +35,8 @@ class TestCliRouting:
                     "backtest", "financial-validate", "monitor",
                     "p0-audit", "label-export", "label-import",
                     "pharma-vbp", "pharma-gt", "pharma-template",
-                    "pharma-screen", "global-map"):
+                    "pharma-screen", "pharma-review", "parser-review",
+                    "global-map"):
             assert cmd in out
 
     def test_unknown_command_errors(self):
@@ -47,6 +48,7 @@ class TestCliRouting:
         rc, out, _ = _run_cli("refresh", "--help")
         assert rc == 0
         assert "--codes" in out or "--limit" in out
+        assert "--no-progress" in out
 
     def test_screen_help_passthrough(self):
         rc, out, _ = _run_cli("screen", "--help")
@@ -65,3 +67,9 @@ class TestCliRouting:
         assert rc == 0
         assert "--init-template" in out
         assert "--csv" in out
+
+    def test_parser_review_help_passthrough(self):
+        rc, out, _ = _run_cli("parser-review", "--help")
+        assert rc == 0
+        assert "--year" in out
+        assert "--output-md" in out

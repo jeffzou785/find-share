@@ -44,7 +44,8 @@ class DataSource(Protocol):
     def get_financial_abstract(self, code: str) -> pd.DataFrame:
         """单只股票的财务摘要（含扣非净利润、毛利率、增长率）。
         列: report_date, revenue, net_profit, deducted_net_profit, gross_margin,
-            revenue_yoy, deducted_net_profit_yoy, ...
+            revenue_yoy, deducted_net_profit_yoy, accounts_receivable, inventory,
+            selling_expense, ...
         """
         ...
 
