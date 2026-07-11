@@ -35,6 +35,11 @@ VBP_RECOVERY_KEYWORDS = (
     "诊断试剂",
     "骨科",
     "心血管耗材",
+    # Phase E：生物医药（胰岛素/疫苗/生物类似药）的集采暴露归 vbp_recovery
+    # 处理，由 VBP 事件驱动细分；长春高新/复星/通化东宝 sw_second='生物医药'
+    # 在此之前被 not_vbp_recovery_pool 拒绝，事件根本不会被读取。
+    "生物医药",
+    "生物药品",
 )
 
 INNOVATION_EXPORT_KEYWORDS = (

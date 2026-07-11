@@ -173,6 +173,36 @@ PE 5y 分位阈值放宽影响（基于 metrics 快照，**注意 first-rejectio
 
 研报库已覆盖所有医药 hit（恒瑞、华润三九、乐普、大博、三友、安图各 19-100 篇研报）。consumer watch 因仅 1 个候选且非主流标的，可后续单独补。**先前的"研报库缺失"归因错误**——是导入任务未跑，不是数据层缺。
 
+### 1.10 Phase D：基础设施修补
+
+**evidence_claims 表**（P2-3）：
+
+```sql
+CREATE TABLE evidence_claims (
+    code VARCHAR, name VARCHAR, claim_text VARCHAR, claim_source VARCHAR,
+    broker VARCHAR, report_date DATE, report_id VARCHAR,
+    evidence_type VARCHAR, confidence VARCHAR, tags_json VARCHAR,
+    raw_text VARCHAR, source_url VARCHAR, created_at TIMESTAMP,
+    PRIMARY KEY (code, report_date, claim_text, evidence_type, report_id)
+);
+```
+
+- `evidence_type` enum：`overseas_order / capacity / customer / license_out / fda_cde / vbp_event / guidance`
+- `DuckDBStore.save_evidence_claims / load_evidence_claims` 方法
+- `scripts/import_evidence_claims.py`：CSV 导入 + 校验（report_date 必填、evidence_type/confidence enum 校验）
+- `tests/fixtures/evidence_claims_seed.csv`：4 条样本
+- `tests/scripts/test_import_evidence_claims.py`：9 条测试
+
+**financial-validation 阈值收紧**：
+- `min_revenue_yoy` / `min_net_profit_yoy` 默认从 0.0 → 0.05（5%）
+- 函数默认 + CLI 默认 + batch 函数默认三处同步
+- 验证：三一重工 600031 verdict 从 `confirmed` → `mixed`（rev+14% 过 5%、np+0.46% 不过 5%）
+
+**broker_reports 持续导入**：
+- 603317 天味食品（consumer watch）补 100 篇研报
+- 001231 农心科技东财返回空（小盘股无覆盖）
+- 全库 16 distinct codes / 903 rows
+
 ## 2. 未完成
 
 ### 2.1 P1：策略一数据覆盖
@@ -195,37 +225,42 @@ PE 5y 分位阈值放宽影响（基于 metrics 快照，**注意 first-rejectio
 2. ✅ Backtest + financial-validate 基础设施跑通；financial validation 已产出 overseas 2025A 的 8 条 verdict。Backtest 需等窗口走完。
 3. ✅ 研报 claim 抽取 schema 已建（详见 1.10），等研报 PDF 入 RAG 后批量补全。
 
-### 1.10 Phase D：基础设施修补
+### 1.11 Phase E：pharma VBP 事件补齐
 
-**evidence_claims 表**（P2-3）：
+针对策略二A pharma-review 暴露的 12 个 positive_label_missed，本轮按公开省际联盟集采批次补了 6 条事件到 `pharma_vbp_events` 表，并修了配套策略 bug。
 
-```sql
-CREATE TABLE evidence_claims (
-    code VARCHAR, name VARCHAR, claim_text VARCHAR, claim_source VARCHAR,
-    broker VARCHAR, report_date DATE, report_id VARCHAR,
-    evidence_type VARCHAR, confidence VARCHAR, tags_json VARCHAR,
-    raw_text VARCHAR, source_url VARCHAR, created_at TIMESTAMP,
-    PRIMARY KEY (code, report_date, claim_text, evidence_type, report_id)
-);
-```
+**6 条新增事件**（`tests/fixtures/pharma_vbp_events_phase_e.csv`）：
 
-- `evidence_type` enum：`overseas_order / capacity / customer / license_out / fda_cde / vbp_event / guidance`
-- `DuckDBStore.save_evidence_claims / load_evidence_claims` 方法
-- `scripts/import_evidence_claims.py`：CSV 导入 + 校验（report_date 必填、evidence_type/confidence enum 校验）
-- `tests/fixtures/evidence_claims_seed.csv`：4 条样本（三一 capacity、恒瑞 guidance、恒瑞 fda_cde、大博 overseas_order）
-- `tests/scripts/test_import_evidence_claims.py`：9 条测试
+| code | name | product | vbp_status | source URL |
+|---|---|---|---|---|
+| 600867 | 通化东宝 | 人胰岛素+甘精胰岛素 | won | smpaa.cn/2021/11/26 |
+| 600196 | 复星医药 | 化学仿制药 | unknown | smpaa.cn/2020/08/24 |
+| 600062 | 华润双鹤 | 降压药+造影剂 | unknown | smpaa.cn/2019/12/25 |
+| 300832 | 新产业 | 化学发光免疫试剂 | unknown | ybj.ah.gov.cn |
+| 603392 | 万泰生物 | IVD 试剂 | unknown | ybj.ah.gov.cn |
+| 600566 | 济川药业 | 中成药 | unknown | hubeiprice.org.cn |
 
-**financial-validation 阈值收紧**：
-- `min_revenue_yoy` / `min_net_profit_yoy` 默认从 0.0 → 0.05（5%）
-- 函数默认 + CLI 默认 + batch 函数默认三处同步
-- 验证：三一重工 600031 verdict 从 `confirmed` → `mixed`（rev+14% 过 5%、np+0.46% 不过 5%）
+**关键 bug 修复**：`classify_pharma_sub_strategy` 缺 "生物医药" 关键词
 
-**broker_reports 持续导入**：
-- 603317 天味食品（consumer watch）补 100 篇研报
-- 001231 农心科技东财返回空（小盘股无覆盖）
-- 全库 16 distinct codes / 903 rows
+- `VBP_RECOVERY_KEYWORDS` 没含 "生物医药"，导致 sw_second='生物医药' 的 000661 长春高新 / 600196 复星 / 600867 通化东宝 直接 `not_vbp_recovery_pool` reject，VBP 事件根本不会被读取。
+- 修复：加入 "生物医药" / "生物药品" 到 VBP_RECOVERY_KEYWORDS。
+- 测试：原 `test_vbp_event_product_can_classify_broad_biomedicine_industry` 改用 "其他医药分类" 模拟无 keyword 命中场景，验证 event-driven rescue 仍工作；新增 `test_biomedicine_sw_second_directly_classified_as_vbp_recovery`。
 
+**Phase E 重筛后状态**（run_id `20260711_153003_f2f1_2025A` + 后续 refresh）：
 
+| code | name | 之前 | 现在 |
+|---|---|---|---|
+| 600867 | 通化东宝 | rejected not_vbp_recovery_pool | **watch partial_vbp_recovery** |
+| 600196 | 复星医药 | rejected not_vbp_recovery_pool | **watch vbp_status_unknown** |
+| 300832 | 新产业 | data_missing vbp_event_missing | **watch vbp_status_unknown** |
+| 600062 | 华润双鹤 | data_missing vbp_event_missing | **watch vbp_status_unknown** |
+| 600566 | 济川药业 | data_missing vbp_event_missing | **watch vbp_status_unknown** |
+| 603392 | 万泰生物 | data_missing vbp_event_missing | **watch vbp_status_unknown** |
+
+**6/12 codes 从 silent drop 变为 actionable watch**（含 1 个 partial_vbp_recovery）。剩余 6 个：
+- 002422/600521：vbp_recovery_not_confirmed（营收同比下降，策略正确判 reject）
+- 002262/600380/688029：仍 vbp_event_missing（未补，缺乏高可信公开证据）
+- 000661 长春高新：vbp_event_missing（生长激素不在国家集采）
 
 ## 3. 下一步命令
 

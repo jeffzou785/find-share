@@ -147,11 +147,16 @@ def test_evaluate_vbp_recovery_accepts_decimal_yoy_from_a_stock_source():
 
 
 def test_vbp_event_product_can_classify_broad_biomedicine_industry():
+    """行业二级分类过粗时，VBP 事件 product_name 作为归类辅助证据。
+
+    注：'生物医药' 自 Phase E 起直接命中 VBP_RECOVERY_KEYWORDS，所以这里
+    用 '其他医药分类' 模拟无直接 keyword 命中的场景，验证 event-driven rescue。
+    """
     candidate = {
         "code": "603658",
         "name": "安图生物",
         "sw_first": "医药生物",
-        "sw_second": "生物医药",
+        "sw_second": "其他医药分类",
     }
     events = pd.DataFrame([
         {
@@ -175,6 +180,42 @@ def test_vbp_event_product_can_classify_broad_biomedicine_industry():
     assert result.status == Status.WATCH
     assert result.watch_reason == "vbp_status_unknown"
     assert result.metrics.source_status.extra["matched_keyword"] == "体外诊断"
+
+
+def test_biomedicine_sw_second_directly_classified_as_vbp_recovery():
+    """Phase E：sw_second='生物医药' 直接命中 VBP_RECOVERY_KEYWORDS。
+
+    长春高新/复星医药/通化东宝 之前因 keyword 缺失被 not_vbp_recovery_pool reject，
+    事件根本不会被读取。修复后由事件驱动细分。
+    """
+    candidate = {
+        "code": "600867",
+        "name": "通化东宝",
+        "sw_first": "医药生物",
+        "sw_second": "生物医药",
+    }
+    events = pd.DataFrame([
+        {
+            "code": "600867",
+            "name": "通化东宝",
+            "product_name": "胰岛素",
+            "vbp_batch": "国家组织胰岛素专项集采",
+            "vbp_status": "won",
+            "tender_date": "2021-11-26",
+            "source_url": "https://www.smpaa.cn/gjsdcg/2021/11/26/10397.shtml",
+            "evidence_text": "胰岛素专项集采中选",
+        }
+    ])
+    result = evaluate_vbp_recovery_one(
+        candidate=candidate,
+        financials=_financials(),
+        vbp_events=events,
+        run_id="r1",
+        period="2026Q1",
+    )
+    # 应进入 vbp_recovery 流程（而非 not_vbp_recovery_pool）
+    assert result.status != Status.REJECTED or result.reject_reason != "not_vbp_recovery_pool"
+    assert result.metrics.source_status.extra["matched_keyword"] == "生物医药"
 
 
 def test_evaluate_vbp_recovery_high_pb_percentile_downgrades_hit_to_watch():
