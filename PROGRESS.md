@@ -284,6 +284,35 @@ CREATE TABLE evidence_claims (
 - `RUN_PDF_GOLDEN=1` 跑 9 条真实 PDF golden 全过（171s）。
 - 全套 `pytest -q`：445 passed, 1 skipped，无回归。
 
+### 1.13 Phase F 数据回填 + 重复行清理
+
+代码修复后跑 `import-overseas --codes 600066,000913,605333,688633,000030 --year 2025` 让 Phase F 在 DB 生效。
+
+**入库结果**（5/5 成功）：
+
+| code | name | region | rev_yi | confidence | warning |
+|---|---|---|--:|---|---|
+| 000030 | 富奥股份 | 欧洲 | 7.94 | high | multi_high_min_below_noise_floor（成功识别噪音） |
+| 000913 | 钱江摩托 | 境外 | 29.07 | high | — |
+| 600066 | 宇通客车 | 海外 | 211.08 | high | — |
+| 605333 | 沪光股份 | 境外 | 2.61 | high | — |
+| 688633 | 星球石墨 | 国外 | 1.58 | high | — |
+
+**重复行清理**：`overseas_revenue` PK 含 `region_name`，新逻辑选了不同 region 时会留下 stale 旧选区行。共清 4 条：
+
+| code-year | 删除（stale）| 保留 |
+|---|---|---|
+| 000030 2025 | 亚洲 0.08yi（旧 chose_smaller 错值）| 欧洲 7.94yi ✓ |
+| 601966 2024 | 出口 107.3yi（confidence=NULL）| 海外 107.3yi (high) |
+| 601966 2025 | 出口 119.3yi（confidence=NULL）| 海外 119.3yi (high) |
+| 300384 2024 | 亚洲 0.00yi（ratio=71768x 噪音）| 境外 2.47yi ✓ |
+
+清理后 0 重复对；`load_overseas_revenue` 的"最后行获胜"循环不再有非确定性。
+
+**000030 加入 golden case**：原本就是 `test_phase_f_multi_high_small_nonzero_min_below_noise_floor` 单元测试的来源案例（max=7.94yi / min=0.08yi / min=1.007% max），补进 `overseas_revenue_golden_cases.csv` 后真实 PDF golden 也覆盖。
+
+**parser-review 进展**：issues 28（Phase F 前）→ 17（代码修复后）→ 16（数据回填后，000030 从 chose_smaller 错值改为 noise_floor 正确值）。剩余 16 条：5 P1 parse_warning + 2 P2 low_confidence + 9 P3（8 pure_domestic + 1 no_overseas_section）。
+
 ## 3. 下一步命令
 
 ```bash
