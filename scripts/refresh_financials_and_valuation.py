@@ -85,14 +85,21 @@ def _refresh_one(
     valuation_source: DataSource,
     financial_source: DataSource,
     code: str,
+    min_pe_history_rows: int = 1,
 ) -> dict[str, str]:
-    """刷新单只股票。返回 {"pe": "ok|missing|error", "fin": "ok|missing|error"}。"""
+    """刷新单只股票，并显式标记策略所需历史 PE 样本是否已达标。"""
     out = {"pe": "missing", "fin": "missing"}
     try:
         df = valuation_source.get_pe_pb_history(code, years=10)
         if not df.empty:
             store.save_pe_pb_history(code, df)
-            out["pe"] = f"ok({len(df)})"
+            # 接口返回可能含同日重复记录，写入表时会按 (code, date) upsert。
+            # 策略读取的是持久化后的历史，因此这里也必须用同一口径判定达标。
+            persisted_rows = len(store.load_pe_pb_history(code))
+            status = (
+                "ok" if persisted_rows >= min_pe_history_rows else "insufficient"
+            )
+            out["pe"] = f"{status}({persisted_rows})"
     except Exception as e:
         out["pe"] = f"error:{type(e).__name__}"
     try:
@@ -189,7 +196,7 @@ def main() -> int:
             f"min_pe_history_rows={min_pe_history_rows}"
         )
 
-        counts = {"ok_pe": 0, "ok_fin": 0, "skip": 0,
+        counts = {"ok_pe": 0, "insufficient_pe": 0, "ok_fin": 0, "skip": 0,
                   "missing_pe": 0, "missing_fin": 0,
                   "error_pe": 0, "error_fin": 0}
         iterator = tqdm(
@@ -206,9 +213,17 @@ def main() -> int:
             ):
                 counts["skip"] += 1
                 continue
-            r = _refresh_one(store, valuation_source, financial_source, code)
+            r = _refresh_one(
+                store,
+                valuation_source,
+                financial_source,
+                code,
+                min_pe_history_rows=min_pe_history_rows,
+            )
             if r["pe"].startswith("ok"):
                 counts["ok_pe"] += 1
+            elif r["pe"].startswith("insufficient"):
+                counts["insufficient_pe"] += 1
             elif r["pe"].startswith("missing"):
                 counts["missing_pe"] += 1
             else:
@@ -223,7 +238,8 @@ def main() -> int:
         elapsed = time.time() - t0
         print()
         print(f"✓ 完成  耗时 {elapsed:.0f}s")
-        print(f"  pe_pb_history: ok={counts['ok_pe']}  missing={counts['missing_pe']}  "
+        print(f"  pe_pb_history: ok={counts['ok_pe']}  insufficient={counts['insufficient_pe']}  "
+              f"missing={counts['missing_pe']}  "
               f"error={counts['error_pe']}  skip={counts['skip']}")
         print(f"  financials:    ok={counts['ok_fin']}  missing={counts['missing_fin']}  "
               f"error={counts['error_fin']}")

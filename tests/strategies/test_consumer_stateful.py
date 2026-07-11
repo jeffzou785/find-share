@@ -33,14 +33,34 @@ class MockSource:
         return self._fin
 
 
-def _pe_history(n: int, value: float = 10.0) -> pd.DataFrame:
+def _pe_history(
+    n: int, value: float = 10.0, freq: str = "W", current_value: float | None = None
+) -> pd.DataFrame:
     """构造 n 个样本的 PE 历史。
 
-    前 n-1 个样本 = 50（高位），最后 1 个样本 = value（当前值，低）。
-    这样 current 的 percentile 接近 0，适合 hit 场景。
+    前 n-1 个样本 = 50（高位），最后 1 个样本 = current_value 或 value（当前值）。
+    默认 current_value=value 让 percentile 接近 0；传 current_value 可独立控制末值。
+
+    freq 默认 W（周），n=120 → 约 840 天 > 730 天，不会触发 new_listing。
+    若需要构造 new_listing 场景，传更短的 freq 或显式构造日期。
     """
+    dates = pd.date_range(end=pd.Timestamp.now(), periods=n, freq=freq)
+    last = current_value if current_value is not None else value
+    values = [50.0] * (n - 1) + [last]
+    return pd.DataFrame({"date": dates, "pe_ttm": values})
+
+
+def _pe_history_negative_current(n: int = 120) -> pd.DataFrame:
+    """构造亏损股 PE 历史：全部历史为正，当前末值为负。"""
     dates = pd.date_range(end=pd.Timestamp.now(), periods=n, freq="W")
-    values = [50.0] * (n - 1) + [value]
+    values = [50.0] * (n - 1) + [-15.0]
+    return pd.DataFrame({"date": dates, "pe_ttm": values})
+
+
+def _pe_history_new_listing(n: int = 50) -> pd.DataFrame:
+    """构造新上市 PE 历史：n 个日样本，跨度 < 2 年。"""
+    dates = pd.date_range(end=pd.Timestamp.now(), periods=n, freq="D")
+    values = [50.0] * (n - 1) + [10.0]
     return pd.DataFrame({"date": dates, "pe_ttm": values})
 
 
@@ -91,7 +111,8 @@ class TestEvaluateConsumerFull:
         assert r.data_missing_reason == "pe_history_missing"
 
     def test_pe_sample_insufficient_returns_data_missing(self, base_candidates):
-        source = MockSource(pe_hist=_pe_history(50), fin=_financials_basic([]))
+        # 长跨度但样本数不足：80 个月样本，跨度 > 730 天，但 < min_history_samples=100
+        source = MockSource(pe_hist=_pe_history(80, freq="MS"), fin=_financials_basic([]))
         results = evaluate_consumer_full(
             source=source, candidates=base_candidates,
             run_id="r1", period="2025A", show_progress=False,
@@ -99,6 +120,34 @@ class TestEvaluateConsumerFull:
         )
         assert results[0].status == Status.DATA_MISSING
         assert results[0].data_missing_reason == "pe_history_missing"
+
+    def test_pe_negative_current_returns_pe_ttm_invalid(self, base_candidates):
+        # 修复 regression：亏损股当前 PE 为负，历史全正 → 不应算分位
+        source = MockSource(
+            pe_hist=_pe_history_negative_current(120),
+            fin=_financials_basic([]),
+        )
+        results = evaluate_consumer_full(
+            source=source, candidates=base_candidates,
+            run_id="r1", period="2025A", show_progress=False,
+            config=StrategyConfig(min_history_samples=100),
+        )
+        assert results[0].status == Status.DATA_MISSING
+        assert results[0].data_missing_reason == "pe_ttm_invalid"
+
+    def test_new_listing_insufficient_history(self, base_candidates):
+        # 001312 场景：跨度 <2 年，样本数也 <100 → new_listing_insufficient_history
+        source = MockSource(
+            pe_hist=_pe_history_new_listing(50),
+            fin=_financials_basic([]),
+        )
+        results = evaluate_consumer_full(
+            source=source, candidates=base_candidates,
+            run_id="r1", period="2025A", show_progress=False,
+            config=StrategyConfig(min_history_samples=100),
+        )
+        assert results[0].status == Status.DATA_MISSING
+        assert results[0].data_missing_reason == "new_listing_insufficient_history"
 
     def test_financials_empty_returns_data_missing(self, base_candidates):
         source = MockSource(
@@ -362,7 +411,7 @@ class TestP11NewSignals:
 
         r = results[0]
         assert r.status == Status.WATCH
-        assert r.watch_reason == "data_warning"
+        assert r.watch_reason == "deducted_profit_proxy_used"
         assert r.metrics.source_status.extra["deducted_profit_proxy"] == "net_profit_attr_parent"
         assert r.metrics.growth.deducted_profit_yoy_ttm == pytest.approx(0.6, abs=1e-3)
 
@@ -668,7 +717,8 @@ class TestP15ConsumerIndustryCoverage:
         """扩展行业命中等价于 '美容护理'。"""
         from src.strategies.consumer_reversal import TARGET_INDUSTRIES
         for industry in ("美容护理", "化妆品", "个护用品", "医美", "纺织服饰",
-                         "服装家纺", "社会服务", "餐饮", "家居用品"):
+                         "纺织服装", "服装家纺", "社会服务",
+                         "休闲、生活及专业服务", "餐饮", "家居用品"):
             assert industry in TARGET_INDUSTRIES
 
     def test_extended_industry_hits(self):
@@ -690,3 +740,37 @@ class TestP15ConsumerIndustryCoverage:
         # 至少进入了评估（不是因行业不符被排除）
         assert results[0].status != Status.DATA_MISSING or \
                results[0].data_missing_reason != "pe_history_missing"
+
+    def test_em2016_daily_chemical_segment_enters_pool(self):
+        """东财把美护/个护归为基础化工时，仍应进入策略一候选池。"""
+        candidates = pd.DataFrame([
+            {
+                "code": "603605", "name": "珀莱雅", "sw_first": "基础化工",
+                "sw_second": "化学制品",
+                "em2016": "基础化工-化学制品-日用化学品",
+            }
+        ])
+        source = MockSource(
+            pe_hist=_pe_history(120, value=10.0),
+            fin=_financials_basic([(2023, 12, 100.0),
+                                   (2024, 12, 50.0),
+                                   (2025, 12, 80.0)]),
+        )
+        results = evaluate_consumer_full(
+            source=source, candidates=candidates,
+            run_id="r1", period="2025A", show_progress=False,
+            config=StrategyConfig(min_history_samples=100),
+        )
+        assert len(results) == 1
+
+    def test_actual_eastmoney_first_industry_aliases_enter_pool(self):
+        """东财实际使用的纺服/服务消费一级标签不能只停留在常量中。"""
+        from src.strategies.consumer_reversal import select_consumer_universe
+
+        candidates = pd.DataFrame([
+            {"code": "1", "name": "纺服", "sw_first": "纺织服装"},
+            {"code": "2", "name": "服务", "sw_first": "休闲、生活及专业服务"},
+            {"code": "3", "name": "非消费", "sw_first": "电子设备"},
+        ])
+
+        assert select_consumer_universe(candidates)["code"].tolist() == ["1", "2"]

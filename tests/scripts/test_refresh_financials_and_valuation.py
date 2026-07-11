@@ -93,3 +93,41 @@ def test_refresh_one_uses_separate_valuation_and_financial_sources(tmp_path: Pat
         assert len(store.load_financials("600031")) == 1
     finally:
         store.close()
+
+
+def test_refresh_one_reports_insufficient_history_for_strategy_threshold(tmp_path: Path):
+    store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+    try:
+        result = _refresh_one(
+            store,
+            valuation_source=ValuationSource(_pe_history(20)),
+            financial_source=FinancialSource(_financials()),
+            code="600031",
+            min_pe_history_rows=100,
+        )
+
+        assert result["pe"] == "insufficient(20)"
+        # 即使样本不足也落库，供后续刷新补全和数据源诊断使用。
+        assert len(store.load_pe_pb_history("600031")) == 20
+    finally:
+        store.close()
+
+
+def test_refresh_one_uses_persisted_history_count_after_date_dedup(tmp_path: Path):
+    store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+    try:
+        pe = _pe_history(120)
+        # 上游偶发重复交易日时，接口行数不能代表策略可用的历史样本数。
+        pe["date"] = pe["date"].iloc[:20].tolist() * 6
+        result = _refresh_one(
+            store,
+            valuation_source=ValuationSource(pe),
+            financial_source=FinancialSource(_financials()),
+            code="600031",
+            min_pe_history_rows=100,
+        )
+
+        assert len(store.load_pe_pb_history("600031")) == 20
+        assert result["pe"] == "insufficient(20)"
+    finally:
+        store.close()

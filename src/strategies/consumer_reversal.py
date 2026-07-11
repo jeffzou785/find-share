@@ -28,17 +28,23 @@ from ..screening import MetricsSchema, ScreeningResult, Status
 from ..screening.period import period_report_date
 
 
-# 策略一目标行业（同时兼容申万 + EM2016 + 新浪 行业名）
-# P1.5-4：扩展消费行业映射，覆盖美妆/个护/医美/鞋服/餐饮/旅游/教育等
+# 策略一目标行业（同时兼容申万 + EM2016 + 新浪行业名）。
+#
+# 东财 em2016 的行业树与申万并非一一对应：美护/个护公司被归入
+# “基础化工-化学制品-日用化学品”，不能仅看 sw_first，否则会漏掉
+# 珀莱雅、贝泰妮等目标公司。一级/二级行业使用精确匹配，em2016 使用
+# 下列末级行业词匹配，避免把整个基础化工行业纳入消费池。
 TARGET_INDUSTRIES = [
     "食品饮料",
     "家用电器", "家电",  # 申万 vs EM2016
     "美容护理", "化妆品", "个护用品", "医美", "医疗美容",  # P1.5-4 美容护理细分
     "商贸零售", "商业百货", "零售", "百货",  # 兼容多种命名
-    "纺织服饰", "服装家纺", "服装", "鞋帽",  # P1.5-4 纺服
-    "社会服务", "餐饮", "酒店餐饮", "旅游", "旅游零售",  # P1.5-4 服务消费
+    "纺织服饰", "纺织服装", "服装家纺", "服装", "鞋帽",  # 申万/东财纺服
+    "社会服务", "休闲、生活及专业服务", "餐饮", "酒店餐饮", "旅游", "旅游零售",  # 申万/东财服务消费
     "轻工制造", "文教用品", "家居", "家居用品",  # P1.5-4 轻工消费
 ]
+
+CONSUMER_EM2016_SEGMENTS = ("日用化学品",)
 
 # 默认阈值
 DEFAULT_PE_PERCENTILE_MAX = 30.0
@@ -259,7 +265,7 @@ def evaluate_consumer_full(
     if candidates.empty:
         return []
 
-    pool = candidates[candidates["sw_first"].isin(TARGET_INDUSTRIES)].copy()
+    pool = select_consumer_universe(candidates)
     if pool.empty:
         return []
 
@@ -276,6 +282,30 @@ def evaluate_consumer_full(
         )
         out.append(result)
     return out
+
+
+def select_consumer_universe(candidates: pd.DataFrame) -> pd.DataFrame:
+    """按可追溯的行业字段筛出策略一候选池。
+
+    历史库存和不同 collector 的行业字段并不完全一致，因此不能只依赖
+    ``sw_first``。缺失列按空字符串处理，保证旧 CSV 入口继续可用。
+    """
+    if candidates.empty:
+        return candidates.copy()
+
+    direct_match = pd.Series(False, index=candidates.index)
+    for column in ("sw_first", "sw_second"):
+        if column in candidates.columns:
+            direct_match |= candidates[column].fillna("").isin(TARGET_INDUSTRIES)
+
+    em2016_match = pd.Series(False, index=candidates.index)
+    if "em2016" in candidates.columns:
+        em2016 = candidates["em2016"].fillna("").astype(str)
+        em2016_match = em2016.apply(
+            lambda value: any(segment in value for segment in CONSUMER_EM2016_SEGMENTS)
+        )
+
+    return candidates.loc[direct_match | em2016_match].copy()
 
 
 def _evaluate_one_to_result(
@@ -333,6 +363,26 @@ def _evaluate_one_to_result(
             for w in SUPPORTED_HISTORY_WINDOWS
         }
         pe_stat = pe_stats[config.history_years]
+        # 修复：当前真实 PE 为负/NaN/极端值时不算分位，避免用历史过滤后的过期正值
+        if pe_stat.get("current_valid") is False and pe_stat["sample_count"] >= 30:
+            metrics.source_status.valuation = "missing"
+            return ScreeningResult.data_missing(
+                **common, data_missing_reason="pe_ttm_invalid", metrics=metrics
+            )
+        # 新上市：历史样本足够但全部集中在最近 <2y → 标记，避免无限重试
+        if (
+            pe_stat["sample_count"] < config.min_history_samples
+            and not pe_hist.empty
+        ):
+            pe_dates = pd.to_datetime(pe_hist["date"]).sort_values()
+            history_span_days = (pe_dates.max() - pe_dates.min()).days
+            if history_span_days < 730:
+                metrics.source_status.valuation = "missing"
+                return ScreeningResult.data_missing(
+                    **common,
+                    data_missing_reason="new_listing_insufficient_history",
+                    metrics=metrics,
+                )
         if (
             pe_stat["percentile"] is None
             or pe_stat["sample_count"] < config.min_history_samples
@@ -562,13 +612,13 @@ def _evaluate_one_to_result(
 
         if used_profit_proxy:
             return ScreeningResult.watch(
-                **common, watch_reason="data_warning", metrics=metrics
+                **common, watch_reason="deducted_profit_proxy_used", metrics=metrics
             )
 
         if config.require_deducted_profit_quality:
             if deducted_to_parent is None:
                 return ScreeningResult.watch(
-                    **common, watch_reason="data_warning", metrics=metrics
+                    **common, watch_reason="deducted_profit_proxy_used", metrics=metrics
                 )
             if deducted_to_parent < config.deducted_to_parent_min:
                 return ScreeningResult.rejected(

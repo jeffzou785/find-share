@@ -82,6 +82,7 @@ WATCH_REASONS = {
     "receivables_growth_warning",
     "inventory_growth_warning",
     "selling_expense_ratio_warning",
+    "deducted_profit_proxy_used",  # 扣非全缺，用归母代理走 watch
 }
 
 # === data_missing_reason ===
@@ -97,6 +98,7 @@ DATA_MISSING_REASONS = {
     "overseas_revenue_missing",
     "disclosures_table_empty",
     "report_not_found",
+    "new_listing_insufficient_history",  # 上市不足 2 年，PE 样本客观不足
 }
 
 

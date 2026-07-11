@@ -3,7 +3,7 @@
 > 本文基于 `review.md` 的对抗式审查、当前 `README.md` 已完成状态、现有 `src/` 代码结构，以及 `$a-stock-data` 可用数据源重新整理。  
 > 核心原则：先修真实瓶颈，再加新指标；先有数据和标签，再谈模型和阈值。
 
-## 0. 当前落地状态快照（2026-07-10）
+## 0. 当前落地状态快照（2026-07-11）
 
 本文件现在既是优化建议，也是下一轮工具接手开发的路线图。当前状态如下：
 
@@ -22,13 +22,15 @@
 - 海外收入 F10 fallback：新增纯文本 F10 parser 和可选 mootdx F10 获取；`import_overseas_revenue.py` 在 PDF 失败时默认尝试 F10 主营构成 fallback；并新增 `--codes` 便于只重跑指定股票。
 - P0 闭环收尾：最新 7 只 `hit/watch` 已回写人工标签；策略二 VBP 事件 8 条、ground truth 30 条已通过校验；`001311`/`002085` 已通过“外销/其他国家和地区”口径解析入库；`p0-audit --period 2025A --strategy all` 已全 OK。
 - 策略一历史估值入口：`refresh --valuation-source akshare` 已落地，跳过逻辑改为“历史 PE/PB 样本数达标 + 财务已存在”才跳过；首批 31 只消费样本已补足历史估值并跑通筛选闭环。
+- 策略一行业映射与预热：消费池改为一级/二级行业精确匹配 + 东财 `em2016` “日用化学品”补充入口，修复美护/个护、纺服和服务消费的实际标签漏选。美护/个护 20 只 run `20260711_112734_afd4_2026Q1` 为 `rejected=20`（PE 分位过高 12、扣非增速不足 4、非拐点/趋势 4）；纺服 50 只 run `20260711_113042_b6e2_2026Q1` 为 `rejected=46`、`data_missing=4`。当前消费池为 684 只，199 只历史 PE/PB 达标。
+- 刷新历史样本口径：`refresh` 已从接口返回行数改为 DuckDB 持久化后的去重行数判定 `ok/insufficient`，使补数日志与策略的 `pe_history_missing` 语义一致；`000955`、`001312`、`002875`、`300591` 留在补数队列。
 - 策略一财务窗口：`AStockSkillSource` 默认拉新浪最近 9 期三表（2024Q1 至 2026Q1），足以计算 TTM 同比且不再抓取 2023 数据；策略运行按 `period` 截断财务序列，避免历史 run 使用未来季报；扣非缺失时可用归母/净利做代理 triage，但只允许进入 watch，不允许直接 hit。
 - 策略二A 复盘工具：新增 `pharma-review`，可把 `pharma_ground_truth.csv` 与指定 `pharma-screen` run 对齐，输出 `positive_label_missed` / `aligned_positive` / `aligned_negative` 等关系。
 - 策略三 parser 质量池：新增 `parser-review`，2025 年当前输出为本地年报 PDF 85 份、已入库海外收入 71 只、待复核问题 33 条（P1=27，P2=6）。
 
 P0 已闭环，后续仍需优化：
 
-- 策略一消费池共 451 只，首批 31 只已补足历史 PE/PB，仍有 420 只待按行业分批预热；预热完成后再做阈值校准。
+- 策略一消费池共 684 只，已有 199 只补足历史 PE/PB，仍有 485 只待按“服务消费 → 轻工制造 → 商贸零售”分批预热；`insufficient` 队列需优先重试，预热完成后再做阈值校准。
 - 策略二医药数据已经具备 P0 种子集和复盘工具，但仍需扩充真实集采事件，优先处理 ground truth 复盘里的 `positive_label_missed`。
 - 策略三仍需继续压低 parser warning 和失败样本：2025 年质量池当前有 14 个 `pdf_without_parsed_overseas`、13 个 `parse_warning`、6 个低置信度样本。
 - 港股扩展池目前只有映射层，尚未把 `$global-stock-data` 行情/财务/新闻字段消费进策略二B。
@@ -551,7 +553,7 @@ TTL 分类：
 
 ## 10. 执行计划
 
-### 10.1 已完成基线（截至 2026-07-10）
+### 10.1 已完成基线（截至 2026-07-11）
 
 1. 评分层：`risk_penalty` 累加、缺失子分中性填充、`coverage_ratio` 已完成。
 2. 覆盖率：`screen_runs.coverage_json`、run 目录 `coverage.md` 已完成。
@@ -573,6 +575,8 @@ TTL 分类：
 18. 策略二A 复盘：`pharma-review` 已完成，可输出 ground truth 与 run 的关系分类。
 19. 策略三 parser 质量池：`parser-review` 已完成，2025 年当前质量池为 P1 27 条、P2 6 条。
 20. 策略一报告期一致性：历史筛选按 `period` 截断财务数据，避免本地已有 2026Q1 时重跑 2025A 误用未来季报；`parser-review` 对旧 run 的空 `metrics_json` 可安全导出。
+21. 策略一第二轮预热：食品饮料与家电各完成 50 只补数，历史 PE/PB 达标消费样本增至 130；`refresh` 会将历史样本不足显式标为 `insufficient`，纳入后续补数队列。
+22. 策略一行业映射与第三轮预热：`select_consumer_universe` 已按 `sw_first`/`sw_second`/`em2016` 选池，补齐美护/个护、纺服、服务消费的东财实际标签；美护/个护 20 只、纺服 50 只预热后，历史 PE/PB 覆盖为 199/684。刷新状态按写入后的去重样本数判定，避免接口重复日期误报成功。
 
 ### 10.2 P0 已闭环：后续维护
 
@@ -584,7 +588,7 @@ TTL 分类：
 
 ### 10.3 P1：策略质量与数据源增强
 
-1. 策略一分批预热：消费池 451 只中仍有 420 只缺历史 PE/PB，按“食品饮料/家电/美容护理 → 纺服/社会服务/轻工 → 商贸零售”分批跑 `refresh --valuation-source akshare --limit 50`，每批后跑 `screen --strategy consumer` 看拒绝分布。
+1. 策略一分批预热：消费池 684 只中仍有 485 只缺历史 PE/PB；食品饮料、家电各一批 50 只，美护/个护 20 只、纺服 50 只已完成。后续按“服务消费 → 轻工制造 → 商贸零售”分批跑 `refresh --valuation-source akshare --limit 50`，并优先重试 `000955`、`001312`、`002875`、`300591`。`insufficient` 与 `missing` 一样进入下一轮补数队列，每批后跑 `screen --strategy consumer` 看拒绝分布。
 2. 策略二A 样本扩充：基于 `pharma-review` 的 `positive_label_missed`，优先补 VBP 事件缺失和生物医药边界样本，不为单个样本过度放宽行业池。
 3. 策略三海外收入质量池：按 `parser-review` 的 P1 队列处理 14 个 PDF 未入库样本和 13 个 parse_warning，新增难例先写 golden case 再改 parser。
 4. 策略三研报证据：对无研报候选降权或标记 `research_evidence_missing`，避免“无证据 watch”混入高优先级。
