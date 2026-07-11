@@ -97,6 +97,55 @@ def _latest_overseas_run_id(store: DuckDBStore, period: str) -> str | None:
     return str(valid.iloc[0]["run_id"])
 
 
+def _classify_missing_pdf(code: str, pdf_path: Path) -> tuple[str, str, str]:
+    """P1.5-7：单股跑一次 parser，按 result.error 细分 issue 类型。
+
+    返回 (issue_type, priority, evidence)：
+    - no_overseas_section / P3：PDF 真无分地区附注（公司可能纯内销）
+    - pure_domestic / P3      ：有分地区附注但全表无境外关键词（公司纯内销）
+    - parse_failure / P1     ：找到附注且含境外关键词但未提取
+    - pdf_corrupt / P1       ：pdfplumber 异常
+    - pdf_without_parsed_overseas / P1：兜底（其他错误）
+    """
+    try:
+        from src.collectors.annual_report_parser import (
+            OVERSEAS_KEYWORDS, parse_annual_report,
+        )
+        result = parse_annual_report(Path(pdf_path), stock_code=code)
+    except Exception as e:
+        return ("pdf_corrupt", "P1", f"parse_annual_report 抛异常: {type(e).__name__}: {e}")
+    if result.success:
+        # 解析成功但 DB 没记录 → 历史漏入库，重跑 import-overseas 即可
+        return ("pdf_without_parsed_overseas", "P1",
+                "本地能解析但未入库，重跑 import-overseas --codes")
+    err = result.error or ""
+    if "未找到分地区营业收入附注" in err:
+        return ("no_overseas_section", "P3",
+                "PDF 未找到分地区营业收入附注，可能该公司无境外业务")
+    if "找到附注但未提取到境外数据" in err:
+        # 进一步检查：分地区表里是否真有境外关键词？
+        # 如果整个 PDF 都无境外词，是纯内销公司，不是 parser bug
+        try:
+            import pdfplumber
+            with pdfplumber.open(Path(pdf_path)) as pdf:
+                full_text = ""
+                for page in pdf.pages:
+                    full_text += page.extract_text() or ""
+            has_overseas_word = any(kw in full_text for kw in OVERSEAS_KEYWORDS if kw != "国际")
+            # 排除"境外会计准则"这种无关上下文
+            has_overseas_word = (
+                has_overseas_word
+                and "境外会计准则" not in full_text.replace(" ", "")
+            )
+        except Exception:
+            has_overseas_word = True  # 解析失败时保守归类为 P1
+        if not has_overseas_word:
+            return ("pure_domestic", "P3",
+                    "PDF 含分地区附注但全文无境外业务关键词，判定为纯内销公司")
+        return ("parse_failure", "P1", err)
+    return ("pdf_without_parsed_overseas", "P1", err or "未知错误")
+
+
 def _issue(
     *,
     code: str,
@@ -183,14 +232,23 @@ def build_quality_review(
 
     for code, path in pdfs.items():
         if code not in parsed_codes:
+            # 区分"无境外业务（噪声）"vs"parser 失败（P1）"：跑一次单股解析看 error。
+            issue_type, priority, evidence = _classify_missing_pdf(code, path)
+            next_action = {
+                "no_overseas_section": "PDF 无分地区附注，确认该公司无境外业务，可忽略",
+                "pure_domestic": "PDF 有分地区表但全文无境外业务关键词，公司纯内销，可忽略",
+                "parse_failure": "parser 找到附注但未提取，加入 golden case 后重跑 import-overseas",
+                "pdf_corrupt": "PDF 解析异常，检查 pdfplumber 兼容性或重新下载",
+                "pdf_without_parsed_overseas": "单股重跑 import-overseas --codes；失败样本写入 golden case",
+            }[issue_type]
             issues.append(_issue(
                 code=code,
-                issue_type="pdf_without_parsed_overseas",
-                priority="P1",
+                issue_type=issue_type,
+                priority=priority,
                 year=year,
                 pdf_path=str(path),
-                evidence="本地有年报 PDF，但 overseas_revenue 未入库该年份记录",
-                next_action="单股重跑 import-overseas --codes；失败样本写入 golden case",
+                evidence=evidence,
+                next_action=next_action,
             ))
 
     run_id = run_id or _latest_overseas_run_id(store, period)

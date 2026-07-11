@@ -46,7 +46,7 @@ def test_golden_cases_registry_shape():
     cases = _load_cases()
     assert cases
     assert set(cases[0].keys()) == REQUIRED_COLUMNS
-    assert {c["code"] for c in cases} == {"001288", "002145", "001311", "002085"}
+    assert {c["code"] for c in cases} == {"001288", "002145", "001311", "002085", "601766"}
 
     for case in cases:
         assert len(case["code"]) == 6

@@ -20,6 +20,7 @@ from scripts.run_after_disclosure import (
     _period_to_report_type,
     _resolve_codes,
     _serialize_run_config,
+    _tag_research_evidence_missing,
 )
 from src.screening import MetricsSchema, ScreeningResult
 from src.storage import DuckDBStore
@@ -212,6 +213,114 @@ class TestCoverageReport:
         assert coverage["metric_coverage"]["quality.debt_ratio"]["coverage_ratio"] == 0.0
         assert coverage["source_status_counts"]["valuation"] == {"missing": 1}
         assert coverage["score"]["avg_coverage_ratio"] == 0.5
+
+
+class TestTagResearchEvidenceMissing:
+    """P1.5-7: hit/watch 候选无研报证据时打 flag。"""
+
+    def test_hit_with_broker_report_not_tagged(self, tmp_path):
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+        store.conn.execute(
+            "INSERT INTO broker_reports (code, title, publish_date, report_id) "
+            "VALUES ('600031', 'r', '2026-07-01', 'rep1')"
+        )
+        result = ScreeningResult.hit(
+            run_id="r1", code="600031", strategy="consumer", period="2025A",
+            hit_reason="all_thresholds_met",
+        )
+        _tag_research_evidence_missing(store, [result])
+        assert result.metrics.source_status.extra["research_evidence_missing"] == "false"
+
+    def test_hit_without_broker_report_tagged(self, tmp_path):
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+        result = ScreeningResult.hit(
+            run_id="r1", code="600031", strategy="consumer", period="2025A",
+            hit_reason="all_thresholds_met",
+        )
+        _tag_research_evidence_missing(store, [result])
+        assert result.metrics.source_status.extra["research_evidence_missing"] == "true"
+
+    def test_rejected_not_tagged(self, tmp_path):
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+        result = ScreeningResult.rejected(
+            run_id="r1", code="600031", strategy="consumer", period="2025A",
+            reject_reason="pe_percentile_too_high",
+        )
+        _tag_research_evidence_missing(store, [result])
+        # rejected 不参与标记，extra 里不应有该 key
+        assert "research_evidence_missing" not in result.metrics.source_status.extra
+
+    def test_watch_status_also_tagged(self, tmp_path):
+        """watch 候选也是潜在标的，必须打标。"""
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+        result = ScreeningResult.watch(
+            run_id="r1", code="600031", strategy="consumer", period="2025A",
+            watch_reason="deducted_profit_proxy_used",
+        )
+        _tag_research_evidence_missing(store, [result])
+        assert result.metrics.source_status.extra["research_evidence_missing"] == "true"
+
+    def test_db_error_fails_safe_with_low_coverage_flag(self, tmp_path):
+        """store 查询异常时不阻塞，全部标 missing 并加 low_coverage 提示。
+
+        模拟方法：关闭 store 连接，让 load_broker_report_codes 抛异常。
+        """
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+        store.close()
+        result = ScreeningResult.hit(
+            run_id="r1", code="600031", strategy="consumer", period="2025A",
+            hit_reason="all_thresholds_met",
+        )
+        _tag_research_evidence_missing(store, [result])
+        # 异常时 covered=set()，全部标 missing + low_coverage
+        assert result.metrics.source_status.extra["research_evidence_missing"] == "true"
+        assert result.metrics.source_status.extra["research_evidence_low_coverage"] == "true"
+
+    def test_batch_query_handles_multiple_codes_and_padding(self, tmp_path):
+        """批量查多 code，zfill padding 等价（'31' == '600031' 不应触发；这里测
+        '00031' 5 位补 0 后等价于 '000031'）。
+
+        真实场景：上游传入 '600031' 字符串，store 按 zfill(6) 归一化。
+        """
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+        store.conn.execute(
+            "INSERT INTO broker_reports (code, title, publish_date, report_id) "
+            "VALUES ('600031', 'r', '2026-07-01', 'rep1')"
+        )
+        # '0031' 应被 zfill(6) 补成 '000031'，与表中 '600031' 不匹配
+        # 这里测的是 padding 起作用且不抛异常
+        r1 = ScreeningResult.hit(
+            run_id="r1", code="600031", strategy="consumer", period="2025A",
+            hit_reason="all_thresholds_met",
+        )
+        r2 = ScreeningResult.hit(
+            run_id="r1", code="600032", strategy="consumer", period="2025A",
+            hit_reason="all_thresholds_met",
+        )
+        _tag_research_evidence_missing(store, [r1, r2])
+        assert r1.metrics.source_status.extra["research_evidence_missing"] == "false"
+        assert r2.metrics.source_status.extra["research_evidence_missing"] == "true"
+        # 覆盖率 1/2 = 50% > 20%，不打 low_coverage
+        assert "research_evidence_low_coverage" not in r1.metrics.source_status.extra
+
+    def test_low_coverage_flag_when_most_codes_uncovered(self, tmp_path):
+        """10 个候选只有 1 个有研报（10% < 20%）→ low_coverage=true。"""
+        store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+        store.conn.execute(
+            "INSERT INTO broker_reports (code, title, publish_date, report_id) "
+            "VALUES ('600031', 'r', '2026-07-01', 'rep1')"
+        )
+        results = [
+            ScreeningResult.hit(
+                run_id="r1", code=f"6000{i}", strategy="consumer", period="2025A",
+                hit_reason="all_thresholds_met",
+            )
+            for i in range(31, 41)  # 10 个 codes，只有 600031 有研报
+        ]
+        _tag_research_evidence_missing(store, results)
+        for r in results:
+            assert "research_evidence_low_coverage" in r.metrics.source_status.extra
+            assert r.metrics.source_status.extra["research_evidence_low_coverage"] == "true"
 
 
 class TestLoadSkipCodesForResume:

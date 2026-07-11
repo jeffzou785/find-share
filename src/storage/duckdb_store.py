@@ -594,6 +594,22 @@ class DuckDBStore:
         sql += " ORDER BY publish_date DESC"
         return self.conn.execute(sql, params).df()
 
+    def load_broker_report_codes(self, codes: set[str]) -> list[str]:
+        """批量查询：给定 codes 集合，返回 broker_reports 表中存在记录的 code 子集。
+
+        供 P1.5-7 research_evidence_missing 标记使用，避免逐 code 查询。
+        """
+        if not codes:
+            return []
+        codes_list = sorted({str(c).zfill(6) for c in codes})
+        placeholders = ", ".join(["?"] * len(codes_list))
+        sql = (
+            f"SELECT DISTINCT code FROM broker_reports "
+            f"WHERE code IN ({placeholders})"
+        )
+        rows = self.conn.execute(sql, codes_list).fetchall()
+        return [r[0] for r in rows]
+
     def update_broker_report_pdf_path(self, report_id: str, pdf_path: str) -> None:
         self.conn.execute(
             "UPDATE broker_reports SET pdf_path = ?, updated_at = CURRENT_TIMESTAMP "

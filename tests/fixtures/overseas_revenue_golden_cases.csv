@@ -5,3 +5,4 @@ code,name,year,pdf_path,expected_status,expected_best_yi_min,expected_best_yi_ma
 001311,多利科技,2025,data/pdfs/annual_reports/001311_2025_annual_report.pdf,fixed,1.65,1.66,1.65,1.66,,Add 外销 keyword coverage
 002085,万丰奥威,2024,data/pdfs/annual_reports/002085_2024_annual_report.pdf,fixed,79.60,79.70,79.60,79.70,,Add 其他国家和地区 keyword coverage
 002085,万丰奥威,2025,data/pdfs/annual_reports/002085_2025_annual_report.pdf,fixed,76.20,76.30,76.20,76.30,,Add 其他国家和地区 keyword coverage
+601766,中国中车,2025,data/pdfs/annual_reports/601766_2025_annual_report.pdf,fixed,348.0,349.0,348.0,349.0,,Add 其他国家或地区 keyword coverage (或 vs 和)

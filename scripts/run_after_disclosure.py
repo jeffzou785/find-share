@@ -234,11 +234,46 @@ def _save_results_to_store(
 ) -> dict[str, int]:
     if not results:
         return {}
+    _tag_research_evidence_missing(store, results)
     store.save_candidate_scores([r.to_row() for r in results])
     counts: dict[str, int] = {}
     for r in results:
         counts[r.status.value] = counts.get(r.status.value, 0) + 1
     return counts
+
+
+def _tag_research_evidence_missing(
+    store: DuckDBStore, results: list[ScreeningResult]
+) -> None:
+    """P1.5-7：对 hit/watch 候选查 broker_reports 表，无研报证据的打 flag。
+
+    设计：
+    - 单 code 视角：写 `research_evidence_missing` = 'true'/'false'。
+    - 批次视角：当本批 broker_reports 覆盖率 < 20% 时，数据本身稀疏，
+      额外打 `research_evidence_low_coverage` = 'true' 提示下游不要把
+      missing 当 reject 信号（避免常量噪音）。
+
+    不强行 watch，避免覆盖策略主决策。
+    """
+    hit_watch_results = [r for r in results if r.status.value in ("hit", "watch")]
+    if not hit_watch_results:
+        return
+    hit_watch_codes = {r.code for r in hit_watch_results}
+    try:
+        covered = set(store.load_broker_report_codes(hit_watch_codes))
+    except Exception:
+        covered = set()
+    coverage_ratio = (
+        len(covered & hit_watch_codes) / len(hit_watch_codes)
+        if hit_watch_codes else 0.0
+    )
+    low_coverage = coverage_ratio < 0.20
+    for r in hit_watch_results:
+        r.metrics.source_status.extra["research_evidence_missing"] = (
+            "false" if r.code in covered else "true"
+        )
+        if low_coverage:
+            r.metrics.source_status.extra["research_evidence_low_coverage"] = "true"
 
 
 def _get_metric_value(metrics: Any, path: str) -> Any:

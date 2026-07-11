@@ -77,9 +77,48 @@
 
 ### 1.5 本轮代码验证
 
-- 全套 `pytest -q`：427 passed, 1 skipped。
+- 全套 `pytest -q`：434 passed, 1 skipped。
 - `python3.9 -m compileall -q src scripts` 通过。
 - 重试 4 只代码（000955 / 002875 / 300591 / 001312）：3 只去重后 2066 个日期已达标；001312 因 2026-04 上市客观不足，自动归为 `new_listing_insufficient_history`。
+
+### 1.6 策略二A pharma-review 复盘
+
+`pharma-review --period 2025A`（输出 `data/exports/pharma_ground_truth_review.md`）：
+
+- 30 ground-truth 样本：6 aligned_positive、12 aligned_negative、12 positive_label_missed。
+- 12 漏标细分：
+  - 6 `vbp_event_missing`（data_missing）：DB 中无 VBP 事件记录。**根因是数据缺口**——`pharma_vbp_events` 表全库仅 8 条，省际联盟高值耗材集采（人工关节、电生理、药物洗脱支架等 2022-2024 批次）系统缺录。
+  - 3 `vbp_recovery_not_confirmed`（rejected）：华海药业 / 科伦药业 2025A 营收同比 -10%/-15%，策略正确判定复苏未确认。
+  - 3 `not_vbp_recovery_pool`（rejected）：通化东宝 / 长春高新 / 复星医药 在 `classify_pharma_sub_strategy` 未归入 vbp_recovery。
+
+未追写 VBP 事件，因为补事件需要外部证据收集（不能凭空造数据）。下一阶段应按公开省际联盟集采批次名单扩 `pharma_vbp_events` 表。
+
+### 1.7 策略三 parser-review 修复
+
+`parser-review --year 2025` 共 33 条 issue，本轮修复后降至 28 条：
+
+- 修关键词 bug：`OVERSEAS_KEYWORDS` 加 `"其他国家或地区"`（原只有 `"其他国家和地区"`，差一个字）。修复后 601766 中国中车正确解析 348.21 亿元境外收入。
+- 加 golden case：`tests/fixtures/overseas_revenue_golden_cases.csv` 新增 601766 行 + `test_overseas_revenue_golden_cases.py` 断言更新。
+- `review_overseas_parser_quality.py` issue 分类细化：调用 `parse_annual_report` 单股跑一次，按 `result.error` 把 `pdf_without_parsed_overseas` 拆为：
+  - `no_overseas_section` (P3)：PDF 无分地区附注
+  - `pure_domestic` (P3)：有附注但全文无境外关键词（公司纯内销）
+  - `parse_failure` (P1)：找到附注且含境外词但提取失败
+  - `pdf_corrupt` (P1)：解析异常
+
+修复后 issue 分布：P1=13（含 13 parse_warning + 0 parse_failure，因为 9 个原 parse_failure 重新归为 pure_domestic P3），P2=6，P3=9。
+
+剩余 13 个 `parse_warning` 多为单位识别 bug（万元/亿元/元混淆），需逐 PDF 调试，未在本轮范围内。
+
+### 1.8 研报证据缺失标记
+
+`scripts/run_after_disclosure.py::_tag_research_evidence_missing`：对 hit/watch 候选批量查 `broker_reports` 表，写入 `metrics.source_status.extra`：
+
+- `research_evidence_missing` = 'true'/'false'：单 code 视角，是否有研报。
+- `research_evidence_low_coverage` = 'true'：批次视角，本批 broker_reports 覆盖率 <20% 时打此 flag，提示下游"数据本身稀疏，不要把 missing 当 reject 信号"。
+
+新增 `DuckDBStore.load_broker_report_codes(codes)`：批量 IN 查询，避免逐 code 调用。
+
+7 个测试覆盖：正常 hit/watch/rejected、DB 异常 safe-fail、批量 padding、低覆盖率守门。
 
 ## 2. 未完成
 
@@ -92,10 +131,10 @@
 
 ### 2.2 P1：策略二与策略三
 
-1. 策略二A：用 `pharma-review` 找到 `positive_label_missed`，优先补集采事件的品种级证据和边界样本。
-2. 策略三：按 `parser-review` 的 P1 队列修复 14 个 PDF 未解析海外收入样本和 ~21 条 `parse_warning`，先添加 golden case 再修改解析器。
-3. 研报证据：无研报候选应降权或标记 `research_evidence_missing`，避免无证据候选进入高优先级队列。
-4. 港股：将 `$global-stock-data` 的行情、K线、三表、新闻、资金流和 A/H 对照字段接入策略二B；明确保留 `hk_disclosure_source_gap`。
+1. ✅ 策略二A：`pharma-review` 已跑完，识别 12 个 positive_label_missed。详见 1.6。**数据补齐**：下一阶段需按省际联盟集采批次名单扩 `pharma_vbp_events`。
+2. ✅ 策略三 parser 修复（关键词 + golden case + issue 分类），详见 1.7。**剩余**：13 个 `parse_warning` 单位识别 bug 待逐 PDF 调试。
+3. ✅ 研报证据缺失标记，详见 1.8。下一阶段需先批量导入 `broker_reports` 数据再启用此 tag 做排序降权。
+4. ⏳ 港股策略二B：推迟到下一阶段。Infrastructure 已就位（`global_stock_mappings` 表 + `HKStockMapping` dataclass + `global-map` CLI），缺 `HKDataSource` adapter、策略二B 实现、tests。是多日工作。
 
 ### 2.3 P2：验证与校准
 
