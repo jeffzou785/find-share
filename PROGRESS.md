@@ -353,6 +353,44 @@ CREATE TABLE evidence_claims (
 
 **parser-review 进展**：issues 16（Phase F 后）→ 16（Phase G 后，数量未变）。**关键差异**：5 P1 `parse_warning` 全部从"错值"变成"正确值 + 信息性警告"，全部纳入 golden case 回归覆盖。
 
+### 1.15 Phase H：P3 降噪（其他地区关键词 + verified 注册表）
+
+针对 parser-review 剩余 9 P3（1 `no_overseas_section` + 8 `pure_domestic`），逐 PDF 人工核验：
+
+**1 个真 bug**：
+- **300230 永利股份** p26 分地区表为 `中国大陆 11.84yi (49.71%)` + **`其他地区 11.97yi (50.29%)`**，但 "其他地区" 不在 `OVERSEAS_KEYWORDS`，被误分类为 `pure_domestic`。修：加入 "其他地区" 到关键词列表（在所有具体地区之后，作为最后兜底匹配，降低歧义风险）。
+
+**8 个正确分类**（加入 `tests/fixtures/verified_pure_domestic.csv` 让 parser-review 跳过）：
+
+| code | name | 分类 | 核验依据 |
+|---|---|---|---|
+| 000420 | 吉林化纤 | no_overseas_section | 全文 0 个境外关键词（除会计准则 boilerplate）|
+| 000056 | 皇庭国际 | pure_domestic | 分地区表仅国内，"境外" 全为会计准则/居留权 boilerplate |
+| 000058 | 深赛格 | pure_domestic | 分地区表仅国内，"辐射亚洲" 是战略表述非营收 |
+| 000417 | 合肥百货 | pure_domestic | 分地区表仅国内，"境外" 全为股权结构 boilerplate |
+| 000715 | 中兴商业 | pure_domestic | 分地区表仅国内，"进出口" 是业务范围注册非实际营收 |
+| 000995 | 皇台酒业 | pure_domestic | 分地区表仅国内，"国外" 指引进葡萄种植技术 |
+| 002616 | 长青集团 | pure_domestic | p25 分地区表只有"国内 100%"一行 |
+| 603239 | 浙江仙通 | pure_domestic | p16 分地区表只有"国内 100%"一行 |
+
+**verified 注册表实现**：
+- `tests/fixtures/verified_pure_domestic.csv`：(code, name, year, reason) 4 列。同一 code 不同年份需分别核验（业务可能变化）。
+- `scripts/review_overseas_parser_quality.py::_load_verified_pure_domestic(year)`：按年份加载 code set。
+- `build_quality_review` 在分类 missing PDF 前先查 verified set，命中则跳过。
+- 报告新增 `verified_pure_domestic_count` 字段（"已跳过纯内销（人工核验）：N 只"）。
+
+**测试**：
+- `tests/scripts/test_review_overseas_parser_quality.py` 新增 `test_verified_pure_domestic_skips_p3_issues`：单元 + 端到端验证 skip 行为。
+- 300230 加入 golden case（expected_best_yi 11.8-12.2，覆盖 "其他地区" 关键词修复）。
+- 全套 `pytest -q`：450 passed。
+- `RUN_PDF_GOLDEN=1` 跑 15 条真实 PDF golden 全过（247s）。
+
+**parser-review 进展**：issues 16（Phase G 后）→ **7**（Phase H 后）：
+- P1: 5（全部 golden case 覆盖，值正确）
+- P2: 2（low_confidence 待人工核对：000019 / 000829，601966 已是 high conf 不再 P2）
+- P3: 0（8 verified skip + 300230 修复入库）
+- 已跳过纯内销：8 只
+
 ## 3. 下一步命令
 
 ```bash

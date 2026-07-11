@@ -28,6 +28,7 @@ from src.storage import DuckDBStore
 
 DEFAULT_MD = PROJECT_ROOT / "data/exports/overseas_parser_quality_review.md"
 DEFAULT_CSV = PROJECT_ROOT / "data/exports/overseas_parser_quality_review.csv"
+VERIFIED_PURE_DOMESTIC_CSV = PROJECT_ROOT / "tests/fixtures/verified_pure_domestic.csv"
 UNIT_FACTOR = {
     "元": 1.0,
     "千元": 1_000.0,
@@ -44,6 +45,26 @@ ISSUE_COLUMNS = [
 
 def _non_empty(value: Any) -> bool:
     return value is not None and pd.notna(value) and str(value).strip() != ""
+
+
+def _load_verified_pure_domestic(year: int) -> set[str]:
+    """加载已人工核验为纯内销的 code 集合（parser-review 跳过这些 P3 噪音）。
+
+    CSV schema: code,name,year,reason —— 同一 code 不同年份需分别核验。
+    """
+    if not VERIFIED_PURE_DOMESTIC_CSV.exists():
+        return set()
+    try:
+        df = pd.read_csv(VERIFIED_PURE_DOMESTIC_CSV, dtype=str)
+    except Exception:
+        return set()
+    if df.empty or "code" not in df.columns or "year" not in df.columns:
+        return set()
+    return {
+        str(r["code"]).zfill(6)
+        for _, r in df.iterrows()
+        if str(r.get("year")).strip() == str(year)
+    }
 
 
 def _truncate(value: Any, limit: int = 100) -> str:
@@ -187,6 +208,7 @@ def build_quality_review(
     period = period or f"{year}A"
     pdf_dir = pdf_dir or config.ANNUAL_REPORT_PDF_DIR
     pdfs = find_annual_report_pdfs(pdf_dir, year)
+    verified_pure_domestic = _load_verified_pure_domestic(year)
 
     overseas = store.load_overseas_revenue()
     if overseas.empty:
@@ -232,6 +254,9 @@ def build_quality_review(
 
     for code, path in pdfs.items():
         if code not in parsed_codes:
+            # Phase H：跳过已人工核验为纯内销的 code（避免占 issue 数）
+            if code in verified_pure_domestic:
+                continue
             # 区分"无境外业务（噪声）"vs"parser 失败（P1）"：跑一次单股解析看 error。
             issue_type, priority, evidence = _classify_missing_pdf(code, path)
             next_action = {
@@ -306,6 +331,7 @@ def build_quality_review(
         "pdf_count": len(pdfs),
         "parsed_count": len(parsed_codes),
         "issue_count": len(issue_df),
+        "verified_pure_domestic_count": len(verified_pure_domestic),
     }
     return {"summary": summary, "issues": issue_df}
 
@@ -326,6 +352,7 @@ def write_review(review: dict, *, md_path: Path = DEFAULT_MD, csv_path: Path = D
         f"- 本地年报 PDF：{summary['pdf_count']} 份",
         f"- 已入库海外收入：{summary['parsed_count']} 只",
         f"- 待复核问题：{summary['issue_count']} 条",
+        f"- 已跳过纯内销（人工核验）：{summary.get('verified_pure_domestic_count', 0)} 只",
         "",
         "## 问题分布",
         "",

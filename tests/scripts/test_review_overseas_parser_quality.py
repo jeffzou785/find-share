@@ -160,6 +160,46 @@ def test_empty_quality_review_still_writes_csv_header(tmp_path: Path):
         store.close()
 
 
+def test_verified_pure_domestic_skips_p3_issues(tmp_path: Path, monkeypatch):
+    """Phase H：verified_pure_domestic.csv 中的 code 不再占 P3 issue 数。"""
+    from scripts.review_overseas_parser_quality import _load_verified_pure_domestic
+
+    # 用临时 CSV 覆盖 module-level 路径
+    csv = tmp_path / "verified.csv"
+    csv.write_text(
+        "code,name,year,reason\n"
+        "000001,测试甲,2025,纯内销核验通过\n"
+        "000002,测试乙,2024,纯内销核验通过\n",
+        encoding="utf-8",
+    )
+    import scripts.review_overseas_parser_quality as mod
+    monkeypatch.setattr(mod, "VERIFIED_PURE_DOMESTIC_CSV", csv)
+
+    # 2025 应含 000001 不含 000002
+    verified_2025 = _load_verified_pure_domestic(2025)
+    assert "000001" in verified_2025
+    assert "000002" not in verified_2025
+    # 2024 反之
+    verified_2024 = _load_verified_pure_domestic(2024)
+    assert "000002" in verified_2024
+    assert "000001" not in verified_2024
+
+    # 端到端：build_quality_review 跳过 verified code
+    store = DuckDBStore(db_path=tmp_path / "t.duckdb")
+    try:
+        # 000001 有 PDF 但无 overseas_revenue 行 → 默认会进 P3 issue
+        (tmp_path / "000001_2025_annual_report.pdf").touch()
+        review = build_quality_review(
+            store, year=2025, period="2025A", pdf_dir=tmp_path
+        )
+        # 000001 应被跳过，不出现在 issues
+        codes_in_issues = set(review["issues"]["code"].astype(str).str.zfill(6))
+        assert "000001" not in codes_in_issues
+        assert review["summary"]["verified_pure_domestic_count"] == 1
+    finally:
+        store.close()
+
+
 def test_build_quality_review_tolerates_empty_screen_metrics(tmp_path: Path):
     store = DuckDBStore(db_path=tmp_path / "t.duckdb")
     try:

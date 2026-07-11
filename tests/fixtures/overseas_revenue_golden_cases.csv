@@ -14,4 +14,5 @@ code,name,year,pdf_path,expected_status,expected_best_yi_min,expected_best_yi_ma
 600523,贵航股份,2025,data/pdfs/annual_reports/600523_2025_annual_report.pdf,fixed,0.6,0.7,0.6,0.7,,Phase G: SUM 美洲 0.01 + 欧洲 0.40 + 亚洲 0.25 (parallel specific regions)
 603086,先达股份,2025,data/pdfs/annual_reports/603086_2025_annual_report.pdf,fixed,13.0,13.6,13.0,13.6,,Phase G: SUM 直接出口 10.09 + 间接出口 3.30 (sub-types of 出口)
 603969,银龙股份,2025,data/pdfs/annual_reports/603969_2025_annual_report.pdf,fixed,6.0,6.4,6.0,6.4,,P1.5-2 chose_smaller: 境外 6.18yi picked (32.06 is total revenue misgrab)
+300230,永利股份,2025,data/pdfs/annual_reports/300230_2025_annual_report.pdf,fixed,11.8,12.2,11.8,12.2,,Phase H: add 其他地区 keyword (was pure_domestic mis-classify, real overseas=11.97yi)
 
