@@ -120,6 +120,59 @@
 
 7 个测试覆盖：正常 hit/watch/rejected、DB 异常 safe-fail、批量 padding、低覆盖率守门。
 
+### 1.9 P2 验证与校准首轮结果
+
+**Backtest 基础设施验证**（`backtest_forward_returns.py`）：
+- 21 行 backtest_results 已入库（overseas 2025A run）；pharma_vbp 18 行。
+- 当前 anchor 距今仅 2-14 天，20/60/120 日窗口尚未走完，`status=missing`。需要等 2026-08 ~ 2026-11 才能产出有效前瞻收益。
+
+**Financial validation 实际结果**（`validate_next_financials.py`，2025A → 2026Q1）：
+
+| code | name | status | validation_verdict | rev_yoy | np_yoy |
+|---|---|---|---|--:|--:|
+| 600031 | 三一重工 | hit | confirmed | +14.03% | +0.46% |
+| 001325 | 元创股份 | hit | confirmed | +0.10% | +0.01% |
+| 001231 | 农心科技 | watch | confirmed | +0.01% | +0.07% |
+| 000837 | 秦川机床 | watch | mixed | +0.10% | -0.01% |
+| 001288 | 运机集团 | watch | mixed | -0.06% | +0.51% |
+| 002145 | 钛能化学 | watch | mixed | +0.07% | -0.23% |
+| 001239 | 永达股份 | watch | deteriorated | -0.01% | -0.48% |
+| 001207 | 联科科技 | watch | deteriorated | -0.07% | -0.22% |
+
+**信号**：2/2 hit 维持正增长（虽幅度极小，三一/元创接近持平），2/5 watch deteriorated——parse_warning watch 原因正确识别了较弱候选。**注**：当前 `confirmed` verdict 阈值（rev_yoy≥0 + np_yoy≥0）过松，下阶段应改为更严格的双位数增长标准。
+
+**阈值敏感度分析**（基于 800 次 2026Q1 consumer screen）：
+
+拒绝原因分布（顺序短路后首次 reject）：
+- pe_percentile_too_high: 500 (62.5%)
+- deducted_yoy_too_low: 167 (20.9%)
+- not_inflection_or_trend: 73 (9.1%)
+- revenue_yoy_too_low: 5 (0.6%)
+- pb_percentile_too_high: 2 (0.2%)
+
+PE 5y 分位阈值放宽影响（基于 metrics 快照，**注意 first-rejection 短路偏差**：PE reject 时后续硬阈值未评估）：
+
+| 放宽到 | 跨过 PE 的候选数 | 其中同时满足 yoy≥30% + rev_yoy≥10% 的候选数 |
+|--:|--:|--:|
+| 40% | 41 | ≤7 |
+| 50% | 82 | ≤7（含煌上煌 002695、潮宏基 002345、浙江正特 001238） |
+| 60% | 136 | ~10-15（估计） |
+| 70% | 191 | ~15-25（估计） |
+
+"同时满足" 列是上限——这些候选还需要通过 inflection/trend、PB 分位、营运质量、OCF、扣非/归母比等后续 6 道闸门才能成为真 hit。
+
+**结论**：策略一在 2026Q1 偏严，PE 5y 分位 ≤30% 在 2021 年牛市基线之上过滤掉绝大多数消费股。下一阶段校准建议：(a) 用 10y 窗口替代 5y（避免 2021 峰值偏差），(b) 或子行业相对分位（同行业排序而非全市场），(c) 或结合 PE 绝对值上限做 OR 条件。**校准必须重跑策略**，不能只靠 metrics 快照推算。
+
+**研报证据覆盖诊断**（已修复，运行 `import_research_reports.py` 补齐医药/三一研报后）：
+
+| 候选类型 | 有研报 | 无研报 | 覆盖率 |
+|---|--:|--:|--:|
+| overseas hit/watch | 6 | 1 | 86% |
+| pharma_vbp hit/watch | 6 | 0 | 100% |
+| consumer watch | 0 | 1 | 0% |
+
+研报库已覆盖所有医药 hit（恒瑞、华润三九、乐普、大博、三友、安图各 19-100 篇研报）。consumer watch 因仅 1 个候选且非主流标的，可后续单独补。**先前的"研报库缺失"归因错误**——是导入任务未跑，不是数据层缺。
+
 ## 2. 未完成
 
 ### 2.1 P1：策略一数据覆盖
@@ -138,9 +191,9 @@
 
 ### 2.3 P2：验证与校准
 
-1. 以策略一批次的拒绝分布与人工标签，评估 PE/PB、营收、毛利率和反转阈值。
-2. 用 20/60/120 交易日前瞻收益和下一期财务验证，检查命中后的收益与业绩兑现。
-3. 在候选级证据去重后，做轻量研报 claim 抽取，优先海外订单、产能、客户、License-out 与 FDA/CDE 进展。
+1. ✅ 阈值敏感度分析（详见 1.9）：当前 30% 阈值过严，建议下阶段测试 10y 窗口或子行业相对分位。
+2. ✅ Backtest + financial-validate 基础设施跑通；financial validation 已产出 overseas 2025A 的 8 条 verdict。Backtest 需等窗口走完。
+3. ⏳ 研报 claim 抽取：受限于 broker_reports 数据稀疏（医药/消费 hit 候选覆盖率 0%），需先批量导入研报再做 claim 解析。
 
 ## 3. 下一步命令
 
