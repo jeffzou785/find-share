@@ -420,6 +420,28 @@ CREATE TABLE evidence_claims (
 - P3: 0 ✓
 - 已跳过纯内销：8 只
 
+### 1.17 P2 校准：策略一 PE 默认窗口 5y → 3y
+
+针对 P2 阈值敏感度分析（详见 1.9）发现的"PE 5y ≤30% 在 2021 牛市基线之上过滤掉 62.5% 消费股"问题，把策略一默认 PE/PB 分位窗口从 5y 改为 3y，**30% 阈值不变**。
+
+**理由**：
+- 5y 窗口覆盖 2021-2022 牛市峰值，"分位 ≤30%" 等价于"比 70% 的牛市时刻还便宜"，标准过严。
+- 3y 窗口只看 2023-2025（熊市 + 复苏），分位 ≤30% 等价于"近 3 年估值底部三成"，更贴合"反转"语义。
+- 不选 10y：10y 引入 2016-2017 上轮牛市峰值，反而稀释当前便宜程度。
+- 阈值不动：用户明确 30% 不变，避免引入新偏差。
+
+**改动**（`src/strategies/consumer_reversal.py::StrategyConfig`）：
+- `history_years: int = 5` → `history_years: int = 3`
+- 注释更新：标"P2 校准：默认从 5y 改为 3y（避开 2021 牛市峰值；30% 阈值不变）"
+
+**影响范围**：
+- 策略一（`consumer_reversal`）：阈值用 `pe_stats[3]["percentile"]`（原 `[5]`）。
+- 策略三（`overseas_champion`）：硬编码 `years=5`（line 489），不受影响。
+- CLI（`run_after_disclosure.py::_build_consumer_config`）：`ConsumerConfig()` 自动继承新默认。
+- 测试：1 个测试显式 `history_years=5` 保留原意（`test_all_windows_filled_in_metrics`），其他全过。
+
+**待跑**：用新默认重跑 2026Q1 消费 screen（约 800 codes），量化 hit/watch 增量。原 5y 默认下：500/800 rejected pe_percentile_too_high，1 watch，0 hit。
+
 ## 3. 下一步命令
 
 ```bash

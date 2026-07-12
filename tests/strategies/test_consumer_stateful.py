@@ -671,7 +671,9 @@ class TestP15MultiWindowPercentile:
         results = evaluate_consumer_full(
             source=source, candidates=base_candidates,
             run_id="r1", period="2025A", show_progress=False,
-            config=StrategyConfig(min_history_samples=30),
+            # 显式 5y：本测试构造的 PE 历史（9 年高位 + 1 年低位）在 5y 窗口下分位 < 30%
+            # P2 校准把默认改为 3y 后，这里需要显式指定以保留原 HIT 路径
+            config=StrategyConfig(min_history_samples=30, history_years=5),
         )
         r = results[0]
         assert r.status == Status.HIT

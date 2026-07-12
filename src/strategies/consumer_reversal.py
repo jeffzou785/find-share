@@ -161,7 +161,8 @@ class StrategyConfig:
     pe_percentile_max: float = DEFAULT_PE_PERCENTILE_MAX
     deducted_yoy_min: float = DEFAULT_DEDUCTED_YOY_MIN
     # P1.5-4：history_years 支持参数化（3/5/10），并校验非法值
-    history_years: int = 5
+    # P2 校准：默认从 5y 改为 3y（避开 2021 牛市峰值；30% 阈值不变）
+    history_years: int = 3
     min_history_samples: int = 100  # PE 历史样本至少这么多
     require_reversal_check: bool = True  # 开启反转判定（拐点 OR 趋势）
     # P1-1 新增信号开关 + 阈值
