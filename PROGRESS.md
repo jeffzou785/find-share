@@ -567,6 +567,28 @@ PE reject 数 31 → 27（-4，-12.9%）。
 
 设计选择：所有 consistency observation 默认 warn（软信号）。可优化：EPS 偏差>100% 升 error，但非 bug。
 
+### 1.22 数据补全 + PE 阈值诊断
+
+**Phase I 数据补全（最后一公里）**：批量刷新 709 个 stale cache codes 的扣非数据。
+- 脚本：直接调 `AStockSkillSource.get_financial_abstract` 拉 AkShare 扣非 + `store.save_financials` 写回
+- 结果：649 ok / 0 missing / 0 errored，896s（~15 min）
+- 验证：refresh 前 1/710 codes 有扣非，refresh 后 **710/710 codes 全有扣非**，stale=0
+
+**PE 阈值放宽诊断**：adversarial 角度评估"PE 25→30 是否系统性放宽"。
+
+| 指标 | 数量 |
+|---|---|
+| 全 overseas 池 screened | 56 codes |
+| PE 25-30 AND ratio>30% | **3 cases（实际 2 个 unique codes）** |
+| PE 25-30 任意 ratio | 10 |
+| ratio>30% AND pe≥25 | 6 |
+
+结论：**PE 阈值不必放宽**。只 2 个 unique codes 在 25-30 区间且高海外占比：
+- 001288 运机集团（Phase G SUM 修复解锁 ratio 56%）
+- 002085 万丰奥威（Phase H 关键词修复解锁 ratio 47.7%）
+
+两个都是 Phase F/G/H 修复后新解锁的边缘案例，不是系统性偏严。原 PE<25 阈值合理，硬要放宽只为这 2 个 case 不值得（会引入更多噪音）。
+
 ## 3. 下一步命令
 
 ```bash
