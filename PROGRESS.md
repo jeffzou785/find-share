@@ -217,7 +217,7 @@ CREATE TABLE evidence_claims (
 1. ✅ 策略二A：`pharma-review` 已跑完，识别 12 个 positive_label_missed。详见 1.6。**数据补齐**：下一阶段需按省际联盟集采批次名单扩 `pharma_vbp_events`。
 2. ✅ 策略三 parser 修复（关键词 + golden case + issue 分类），详见 1.7。**剩余**：13 个 `parse_warning` 单位识别 bug 待逐 PDF 调试。
 3. ✅ 研报证据缺失标记，详见 1.8。下一阶段需先批量导入 `broker_reports` 数据再启用此 tag 做排序降权。
-4. ⏳ 港股策略二B：推迟到下一阶段。Infrastructure 已就位（`global_stock_mappings` 表 + `HKStockMapping` dataclass + `global-map` CLI），缺 `HKDataSource` adapter、策略二B 实现、tests。是多日工作。
+4. ❌ ~~港股策略二B~~（2026-07-12 放弃）。Infrastructure 仍保留（`global_stock_mappings` 表 + `HKStockMapping` dataclass + `global-map` CLI），以备将来可直接接入。
 
 ### 2.3 P2：验证与校准
 
