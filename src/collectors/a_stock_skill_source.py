@@ -69,10 +69,22 @@ class AStockSkillSource:
         ])
 
     def get_financial_abstract(self, code: str) -> pd.DataFrame:
-        """从新浪三表汇总 financials 表需要的核心字段。"""
+        """从新浪三表汇总 financials 表需要的核心字段。
+
+        Phase I 修复：新浪标准三表不含扣非净利润，导致策略一 100% 走归母 proxy。
+        当 Sina 返回的 deducted_net_profit 全 NaN 时，从 AkShare 补扣非历史。
+        """
         code = normalize_code(code)
         full = self.get_financials_full(code)
-        return financials_full_to_abstract(full)
+        abstract = financials_full_to_abstract(full)
+        # Phase I：补扣非。Sina 三表无扣非 → AkShare 财报摘要接口有
+        if not abstract.empty and "deducted_net_profit" in abstract.columns:
+            needs_deduced = abstract["deducted_net_profit"].isna().all()
+            if needs_deduced:
+                ak_deduced = _fetch_akshare_deducted(code)
+                if ak_deduced is not None and not ak_deduced.empty:
+                    abstract = _merge_deducted_into_abstract(abstract, ak_deduced)
+        return abstract
 
     def get_financials_full(self, code: str, num: int = 9) -> pd.DataFrame:
         """返回新浪三表长格式，默认覆盖 2024Q1 至 2026Q1 的 9 个报告期。"""
@@ -192,6 +204,50 @@ def _first_not_none(values: dict[str, float], *keys: str) -> Optional[float]:
         if key in values and values[key] is not None:
             return values[key]
     return None
+
+
+def _fetch_akshare_deducted(code: str) -> Optional[pd.DataFrame]:
+    """从 AkShare 拉扣非净利润历史。
+
+    AkShare 的 `stock_financial_abstract` 含扣非字段（新浪三表不返回）。
+    失败时返回 None，上层走 proxy 路径。
+
+    Returns:
+        DataFrame with columns [report_date, deducted_net_profit]，或 None
+    """
+    try:
+        from .akshare_impl import AkShareSource
+    except Exception:
+        return None
+    try:
+        ak = AkShareSource()
+        fa = ak.get_financial_abstract(code)
+    except Exception:
+        return None
+    if fa is None or fa.empty or "deducted_net_profit" not in fa.columns:
+        return None
+    out = fa[["report_date", "deducted_net_profit"]].copy()
+    out = out.dropna(subset=["deducted_net_profit"])
+    return out if not out.empty else None
+
+
+def _merge_deducted_into_abstract(
+    abstract: pd.DataFrame, ak_deduced: pd.DataFrame
+) -> pd.DataFrame:
+    """把 AkShare 的扣非历史按 report_date 合并进 abstract。
+
+    Sina 已有的 deducted_net_profit 优先（不覆盖）；仅填 None。
+    """
+    if ak_deduced is None or ak_deduced.empty:
+        return abstract
+    merged = abstract.merge(
+        ak_deduced.rename(columns={"deducted_net_profit": "_ak_deduced"}),
+        on="report_date", how="left",
+    )
+    # 仅填 None 的位置
+    mask = merged["deducted_net_profit"].isna() & merged["_ak_deduced"].notna()
+    merged.loc[mask, "deducted_net_profit"] = merged.loc[mask, "_ak_deduced"]
+    return merged.drop(columns=["_ak_deduced"])
 
 
 __all__ = [

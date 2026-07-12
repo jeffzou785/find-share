@@ -86,7 +86,9 @@ class LocalCachedSource(DataSource):
         local = self._safe_load_local(
             lambda: self.store.load_financials(code)
         )
-        if not local.empty:
+        # Phase I：检测 cache stale（deducted_net_profit 全 NULL）。
+        # 旧 cache 在 Sina-only 时代写入，缺扣非 → 强制走 upstream 拉新数据。
+        if not local.empty and not _cache_lacks_deducted(local):
             return local.copy()
 
         df = self.upstream.get_financial_abstract(code)
@@ -95,7 +97,8 @@ class LocalCachedSource(DataSource):
                 self.store.save_financials(code, df)
             except Exception:
                 pass
-        return df
+        # 若 upstream 返回空，仍把 cache 给出来（保留其他字段），比空强
+        return df if not df.empty else (local.copy() if not local.empty else df)
 
     def _safe_load_local(self, loader) -> pd.DataFrame:
         """包一层异常：本地表损坏或缺失时不影响 fallback 路径。"""
@@ -103,3 +106,16 @@ class LocalCachedSource(DataSource):
             return loader()
         except Exception:
             return pd.DataFrame()
+
+
+def _cache_lacks_deducted(df: pd.DataFrame) -> bool:
+    """Phase I：检测 cache 是否缺 deducted_net_profit。
+
+    旧 cache 来自 Sina-only 时代，deducted_net_profit 全 NULL。
+    AStockSkillSource 现已补 AkShare 扣非数据，需检测 stale cache 并强制刷新。
+    """
+    if df is None or df.empty:
+        return False  # 空 cache 不是 stale，正常走 upstream
+    if "deducted_net_profit" not in df.columns:
+        return True
+    return df["deducted_net_profit"].isna().all()
