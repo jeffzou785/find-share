@@ -468,6 +468,27 @@ CREATE TABLE evidence_claims (
 - P2-4 沿用 11 条 consistency 测试。
 - 全套 `pytest -q`：458 passed，无回归。
 
+### 1.19 P2-5 状态：a-stock-data 兜底已就位
+
+用户原计划"P2-5 用 Tushare 兜底"，本轮改为"用 `$a-stock-data` skill"——盘点发现其实早就这么做了：
+
+| 组件 | 实现 | 用途 |
+|---|---|---|
+| `AStockSkillSource` | 腾讯财经 quote + 新浪三表 financials（都不封 IP）| **主源**，已被 `LocalCachedSource` 默认使用 |
+| `LocalCachedSource` | DuckDB 缓存 + upstream fallback | 所有策略脚本默认入口 |
+| `AkShareSource` | AkShare（不稳定，可选）| `--valuation-source akshare` 显式启用 |
+| `TushareSource` | stub（未实现，token 必填）| 真要切 Tushare 时再实现 |
+
+**架构就位情况**（`scripts/run_after_disclosure.py` line 818）：
+```python
+source = LocalCachedSource(store=store, upstream=AStockSkillSource())
+```
+- 命中 DuckDB 缓存 → 0 网络调用
+- 缓存缺失 → 走 AStockSkillSource（腾讯 quote + 新浪三表，零 IP 封锁风险）
+- 这就是 P2-5 想要的"AkShare 不稳定时的备选"，只是名字不叫 Tushare
+
+**结论**：P2-5 在前几轮 P1.5-1 工作里就完成了，本轮仅做文档确认。Tushare stub 保留，真要切再说。
+
 ## 3. 下一步命令
 
 ```bash
