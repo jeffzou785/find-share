@@ -59,8 +59,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--alert", action="store_true",
-        help="只输出高信号 alert（new_hit/dropped_hit/大幅指标变化），
-              适合通知场景；不指定时输出完整 diff",
+        help="只输出高信号 alert（new_hit/dropped_hit/大幅指标变化），"
+             "适合通知场景；不指定时输出完整 diff",
     )
     args = parser.parse_args()
 

@@ -489,6 +489,29 @@ source = LocalCachedSource(store=store, upstream=AStockSkillSource())
 
 **结论**：P2-5 在前几轮 P1.5-1 工作里就完成了，本轮仅做文档确认。Tushare stub 保留，真要切再说。
 
+### 1.20 P2 实战验证（2026Q1 consumer，3y vs 5y）
+
+跑同 50 个纺织服装 codes 在 2026Q1 period 下两次：5y 默认（P2 校准前）vs 3y 默认（P2 校准后），用 monitor 做 diff。
+
+**统计对比**：
+
+| 窗口 | rejected | data_missing | watch | hit | pe_percentile_too_high |
+|---|--:|--:|--:|--:|--:|
+| 5y（manual_5y_1783831109）| 41 | 9 | 0 | 0 | 31 |
+| 3y（manual_3y_scored_1783831052）| 40 | 10 | 0 | 0 | **27** |
+
+PE reject 数 31 → 27（-4，-12.9%）。
+
+**4 个被 PE 救出的 code 的实际归宿**：
+- 3 个转为 `not_inflection_or_trend` 或 `gross_margin_deteriorating`（PE 救出后被后续闸门挡住）
+- 1 个（*ST步森 002569）转为 `data_missing`：3y 窗口下 PE 历史不足
+
+**P2-3 alert 实战**：`monitor --alert` 在 5y→3y 对比下输出 3 events（1 status_changed + 2 metric_changed，全是 *ST步森），24 events 中正确过滤出 3 个高信号。
+
+**结论**：3y 校准按设计生效（PE reject -4），但**没产生新 hit/watch**——印证 1.9 节当初判断"PE 不是唯一瓶颈"。要真出 hit，需要同时调整 inflection 判定或扣非同比阈值。
+
+**P2-2 验证**：2026Q1 跑通，`require_overseas_filter("2026Q1")=False`（季报无完整附注），策略一 consumer 不受影响，策略三 overseas 会跳过 overseas_revenue 硬过滤。
+
 ## 3. 下一步命令
 
 ```bash
