@@ -442,6 +442,32 @@ CREATE TABLE evidence_claims (
 
 **待跑**：用新默认重跑 2026Q1 消费 screen（约 800 codes），量化 hit/watch 增量。原 5y 默认下：500/800 rejected pe_percentile_too_high，1 watch，0 hit。
 
+### 1.18 P2-1 ~ P2-4 状态盘点 + P2-3/P2-4 收尾
+
+盘点发现 P2-1 / P2-2 / P2-4 实现已基本完成（旧 commit），本轮只补 P2-3 alert 过滤 + P2-4 CLI 集成。
+
+| 模块 | 状态 | 位置 |
+|---|---|---|
+| **P2-1 评分层** | ✅ 已完成（旧）| `src/screening/scoring.py`（5 子分 + 加权 final_score + risk_penalty + coverage_ratio）|
+| **P2-2 半年报/季报扩展** | ✅ 已完成（旧）| `src/screening/period.py`（parse_period / require_overseas_filter / next_period / period_report_date）|
+| **P2-3 动态监控** | ✅ 本轮收尾 | `src/screening/run_diff.py`（diff_runs 已有）+ 新增 `filter_alertable_events` / `write_alert_report` + `monitor_changes.py --alert` |
+| **P2-4 财报 vs 研报一致性** | ✅ 本轮收尾 | `src/screening/consistency.py`（check_consistency_batch 已有）+ 新增 `run_consistency_check.py` CLI |
+
+**P2-3 新增**（alert 过滤 + sink）：
+- `filter_alertable_events(diff, alert_thresholds=None)`：从 diff 中过滤高信号事件——所有 new_hit/dropped_hit/new_parse_warning + hit↔watch 翻转 + metric 变化超 `DEFAULT_ALERT_THRESHOLDS`（PE >10、PE 分位 >20pp、海外占比 >15pp、final_score >0.15）。
+- `write_alert_report(diff, output_path)`：生成聚焦 alert markdown（按 5 类分组：🆕 新 hit / ❌ 跌出 hit / 🔄 翻转 / ⚠ parse_warning / 📊 指标大变化）。
+- `monitor_changes.py --alert` flag：有 alert 时 exit code=2（供 cron 检测），无 alert exit code=0。
+
+**P2-4 新增**（CLI 集成）：
+- `scripts/run_consistency_check.py`：拉取指定 run_id 的 hit/watch codes，跑 `check_consistency_batch`，输出 markdown 报告（仅含 warn/error 级，过滤 info 噪音）。
+- CLI 子命令：`python3 -m src.pipeline.cli consistency --run-id <id> --report-year 2025`。
+- 首跑样本（overseas run 20260704_112743_614f）：7 候选 → 6 warn，主因是"财报有海外收入但研报未提"，正是被忽视信号。
+
+**测试**：
+- P2-3 新增 5 条 alert 测试（filter 命中规则 + write_alert_report 表渲染 + 空 diff 提示）。
+- P2-4 沿用 11 条 consistency 测试。
+- 全套 `pytest -q`：458 passed，无回归。
+
 ## 3. 下一步命令
 
 ```bash

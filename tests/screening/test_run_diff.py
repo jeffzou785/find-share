@@ -271,3 +271,95 @@ class TestDiffLatestTwoRuns:
         diff = diff_latest_two_runs(store, strategy="overseas", period="2025A")
         assert diff is not None
         assert len(diff.new_hits) == 1
+
+
+# === P2-3 alert 过滤测试 ===
+
+from src.screening.run_diff import (
+    DEFAULT_ALERT_THRESHOLDS,
+    filter_alertable_events,
+    write_alert_report,
+)
+
+
+def _make_diff(events: list) -> RunDiff:
+    """构造一个空 RunDiff 并填充 events。"""
+    d = RunDiff(before_run_id="b", after_run_id="a")
+    d.events = events
+    return d
+
+
+def test_filter_alertable_includes_all_hit_flips():
+    """new_hit / dropped_hit 都进 alert。"""
+    diff = _make_diff([
+        DiffEvent(code="001", name="A", strategy="overseas", kind="new_hit", detail="d"),
+        DiffEvent(code="002", name="B", strategy="overseas", kind="dropped_hit", detail="d"),
+    ])
+    alerts = filter_alertable_events(diff)
+    assert len(alerts) == 2
+
+
+def test_filter_alertable_status_flip_hit_watch_included():
+    """hit ↔ watch 翻转进 alert，hit → rejected 不进（太常见）。"""
+    diff = _make_diff([
+        DiffEvent(code="001", name="A", strategy="x", kind="status_changed",
+                  detail="d", before="hit", after="watch"),
+        DiffEvent(code="002", name="B", strategy="x", kind="status_changed",
+                  detail="d", before="hit", after="rejected"),
+    ])
+    alerts = filter_alertable_events(diff)
+    assert len(alerts) == 1
+    assert alerts[0].code == "001"
+
+
+def test_filter_alertable_metric_only_above_threshold():
+    """metric_changed 仅超过 alert_thresholds 才告警。"""
+    diff = _make_diff([
+        # PE +5：低于 alert 阈值 10，不告警
+        DiffEvent(code="001", name="A", strategy="x", kind="metric_changed",
+                  detail="d", before=15.0, after=20.0, metric_key="valuation.pe_ttm"),
+        # PE +15：高于 alert 阈值 10，告警
+        DiffEvent(code="002", name="B", strategy="x", kind="metric_changed",
+                  detail="d", before=10.0, after=25.0, metric_key="valuation.pe_ttm"),
+        # reports_count 不在 alert_thresholds，不告警
+        DiffEvent(code="003", name="C", strategy="x", kind="metric_changed",
+                  detail="d", before=0, after=20, metric_key="catalyst.reports_count_90d"),
+    ])
+    alerts = filter_alertable_events(diff)
+    assert len(alerts) == 1
+    assert alerts[0].code == "002"
+
+
+def test_filter_alertable_includes_parse_warning():
+    """new_parse_warning 都告警。"""
+    diff = _make_diff([
+        DiffEvent(code="001", name="A", strategy="x", kind="new_parse_warning",
+                  detail="d", before=None, after="unit_ambiguous"),
+    ])
+    alerts = filter_alertable_events(diff)
+    assert len(alerts) == 1
+
+
+def test_write_alert_report_renders_tables(tmp_path: Path):
+    """alert 报告含表头与事件行。"""
+    diff = _make_diff([
+        DiffEvent(code="001", name="A", strategy="overseas", kind="new_hit", detail="新 hit"),
+        DiffEvent(code="002", name="B", strategy="overseas", kind="dropped_hit", detail="跌出"),
+        DiffEvent(code="003", name="C", strategy="overseas", kind="metric_changed",
+                  detail="PE 暴涨", before=10.0, after=30.0, metric_key="valuation.pe_ttm"),
+    ])
+    out = tmp_path / "alert.md"
+    md = write_alert_report(diff, output_path=out)
+    assert "新进入 hit" in md
+    assert "跌出 hit" in md
+    assert "关键指标大幅变化" in md
+    assert out.exists()
+    content = out.read_text(encoding="utf-8")
+    assert "001" in content and "002" in content and "003" in content
+
+
+def test_write_alert_report_empty_diff_message():
+    """无 alert 事件时返回含提示文本。"""
+    diff = _make_diff([])
+    md = write_alert_report(diff)
+    assert "无待告警事件" in md

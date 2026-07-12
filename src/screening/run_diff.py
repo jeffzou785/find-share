@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -361,3 +362,149 @@ def diff_latest_two_runs(
     return diff_runs(
         store, before_run_id, after_run_id, thresholds=thresholds
     )
+
+
+# P2-3 alert：从 RunDiff 中过滤高信号事件，写 alert 报告。
+# 调度（cron/loop skill）由用户自行配置；本模块只负责"给定 diff，产 alert"。
+
+# 默认 alert 触发阈值：metric_changed 事件超过此绝对值才进 alert
+DEFAULT_ALERT_THRESHOLDS: dict[str, float] = {
+    "valuation.pe_ttm": 10.0,            # PE 变化 > 10
+    "valuation.pe_pct_5y": 20.0,         # PE 分位变化 > 20pp
+    "overseas.overseas_ratio": 0.15,     # 海外占比变化 > 15pp
+    "score.final_score": 0.15,           # 综合评分变化 > 0.15
+}
+
+
+def filter_alertable_events(
+    diff: RunDiff,
+    *,
+    alert_thresholds: Optional[dict[str, float]] = None,
+) -> list[DiffEvent]:
+    """P2-3：从 diff 中过滤值得告警的高信号事件。
+
+    规则：
+    - 所有 new_hit / dropped_hit 都告警（hit 翻转本身就是大事件）
+    - new_parse_warning 都告警（数据质量退化）
+    - status_changed 仅 hit ↔ watch 翻转告警（hit→rejected 太常见）
+    - metric_changed 仅超过 alert_thresholds 的告警（比 DEFAULT_METRIC_THRESHOLDS 更严）
+
+    Args:
+        diff: RunDiff 对象
+        alert_thresholds: 指定哪些 metric 变化值得告警；None 用默认
+
+    Returns:
+        待告警的 DiffEvent 列表（按 kind 分组无排序保证）
+    """
+    thresholds = alert_thresholds or DEFAULT_ALERT_THRESHOLDS
+    out: list[DiffEvent] = []
+
+    for e in diff.events:
+        if e.kind in ("new_hit", "dropped_hit", "new_parse_warning"):
+            out.append(e)
+        elif e.kind == "status_changed":
+            # hit ↔ watch 翻转才告警
+            before_str = str(e.before) if e.before is not None else ""
+            after_str = str(e.after) if e.after is not None else ""
+            if "hit" in (before_str + after_str) and "watch" in (
+                before_str + after_str
+            ):
+                out.append(e)
+        elif e.kind == "metric_changed":
+            if e.metric_key not in thresholds:
+                continue
+            threshold = thresholds[e.metric_key]
+            try:
+                b = float(e.before) if e.before is not None else 0.0
+                a = float(e.after) if e.after is not None else 0.0
+                if abs(a - b) >= threshold:
+                    out.append(e)
+            except (ValueError, TypeError):
+                continue
+    return out
+
+
+def write_alert_report(
+    diff: RunDiff,
+    *,
+    output_path: Path | str | None = None,
+    alert_thresholds: Optional[dict[str, float]] = None,
+) -> str:
+    """生成 alert markdown 报告（高信号事件子集）。
+
+    Args:
+        diff: RunDiff
+        output_path: 写入文件路径；None 则返回字符串
+        alert_thresholds: filter_alertable_events 的阈值
+
+    Returns:
+        markdown 字符串
+    """
+    events = filter_alertable_events(
+        diff, alert_thresholds=alert_thresholds
+    )
+    new_hits = [e for e in events if e.kind == "new_hit"]
+    dropped = [e for e in events if e.kind == "dropped_hit"]
+    status_flips = [
+        e for e in events
+        if e.kind == "status_changed"
+    ]
+    warnings = [e for e in events if e.kind == "new_parse_warning"]
+    metric_alerts = [
+        e for e in events if e.kind == "metric_changed"
+    ]
+
+    lines = [
+        "# Alert Report",
+        "",
+        f"- before: `{diff.before_run_id}` ({diff.before_started_at})",
+        f"- after: `{diff.after_run_id}` ({diff.after_started_at})",
+        f"- 待告警事件：{len(events)} 条（全部 diff 事件 {len(diff.events)} 条）",
+        "",
+    ]
+
+    def _table(rows: list[DiffEvent], title: str, cols: list[str]) -> None:
+        if not rows:
+            return
+        lines.append(f"## {title} ({len(rows)})")
+        lines.append("")
+        lines.append("| " + " | ".join(cols) + " |")
+        lines.append("|" + "|".join(["------"] * len(cols)) + "|")
+        for e in rows:
+            cells = []
+            for c in cols:
+                if c == "代码":
+                    cells.append(e.code)
+                elif c == "名称":
+                    cells.append(e.name or "")
+                elif c == "策略":
+                    cells.append(e.strategy)
+                elif c == "详情":
+                    cells.append(e.detail)
+                elif c == "指标":
+                    cells.append(e.metric_key or "")
+                elif c == "before":
+                    cells.append(str(e.before))
+                elif c == "after":
+                    cells.append(str(e.after))
+            lines.append("| " + " | ".join(cells) + " |")
+        lines.append("")
+
+    _table(new_hits, "🆕 新进入 hit", ["代码", "名称", "策略", "详情"])
+    _table(dropped, "❌ 跌出 hit", ["代码", "名称", "策略", "详情"])
+    _table(status_flips, "🔄 hit ↔ watch 翻转", ["代码", "名称", "策略", "详情"])
+    _table(warnings, "⚠ 新增 parse_warning", ["代码", "名称", "策略", "详情"])
+    _table(
+        metric_alerts, "📊 关键指标大幅变化",
+        ["代码", "名称", "策略", "指标", "before", "after"],
+    )
+
+    if not events:
+        lines.append("_(无待告警事件)_")
+
+    md = "\n".join(lines)
+    if output_path is not None:
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(md, encoding="utf-8")
+    return md

@@ -83,6 +83,7 @@ __all__ = [
     "KIND_ANNUAL", "KIND_HALF_YEAR", "KIND_Q1", "KIND_Q3",
     "RunDiff", "DiffEvent", "diff_runs", "diff_latest_two_runs",
     "DEFAULT_METRIC_THRESHOLDS",
+    "filter_alertable_events", "write_alert_report", "DEFAULT_ALERT_THRESHOLDS",
     "ConsistencyResult", "ConsistencyObservation",
     "check_consistency", "check_consistency_batch",
     "check_eps_consistency", "check_overseas_consistency",

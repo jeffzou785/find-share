@@ -11,6 +11,10 @@
     # 输出 Markdown 报告
     python3 scripts/monitor_changes.py --strategy overseas --period 2025A \\
         --output data/exports/run_diff.md
+
+    # 仅输出高信号 alert（适合 cron / 通知 sink）
+    python3 scripts/monitor_changes.py --strategy overseas --period 2025A \\
+        --alert --output data/exports/alerts.md
 """
 from __future__ import annotations
 
@@ -22,7 +26,12 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import config
-from src.screening.run_diff import diff_latest_two_runs, diff_runs
+from src.screening.run_diff import (
+    diff_latest_two_runs,
+    diff_runs,
+    filter_alertable_events,
+    write_alert_report,
+)
 from src.storage import DuckDBStore
 
 
@@ -48,6 +57,11 @@ def main() -> int:
         "--output", default=None,
         help="Markdown 报告输出路径（默认打印到 stdout）",
     )
+    parser.add_argument(
+        "--alert", action="store_true",
+        help="只输出高信号 alert（new_hit/dropped_hit/大幅指标变化），
+              适合通知场景；不指定时输出完整 diff",
+    )
     args = parser.parse_args()
 
     store = DuckDBStore()
@@ -71,15 +85,23 @@ def main() -> int:
                 )
                 return 1
 
-        md = diff.to_markdown()
+        if args.alert:
+            events = filter_alertable_events(diff)
+            md = write_alert_report(diff)
+            # exit code：有 alert 时返回 2（供 cron 检测）；无 alert 返回 0
+            exit_code = 2 if events else 0
+        else:
+            md = diff.to_markdown()
+            exit_code = 0
+
         if args.output:
             out_path = Path(args.output)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(md, encoding="utf-8")
-            print(f"✓ diff 已输出: {out_path}")
+            print(f"✓ {'alert' if args.alert else 'diff'} 已输出: {out_path} ({len(events) if args.alert else len(diff.events)} events)")
         else:
             print(md)
-        return 0
+        return exit_code
     finally:
         store.close()
 

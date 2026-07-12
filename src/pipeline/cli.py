@@ -75,6 +75,8 @@ SUBCOMMAND_SCRIPTS: dict[str, str] = {
     "global-map": str(SCRIPTS_DIR / "import_global_stock_mappings.py"),
     # P2-3 监控
     "monitor": str(SCRIPTS_DIR / "monitor_changes.py"),
+    # P2-4 财报 vs 研报一致性
+    "consistency": str(SCRIPTS_DIR / "run_consistency_check.py"),
 }
 
 
