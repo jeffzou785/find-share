@@ -512,6 +512,61 @@ PE reject 数 31 → 27（-4，-12.9%）。
 
 **P2-2 验证**：2026Q1 跑通，`require_overseas_filter("2026Q1")=False`（季报无完整附注），策略一 consumer 不受影响，策略三 overseas 会跳过 overseas_revenue 硬过滤。
 
+### 1.21 对抗式 review 链：联合校准 / overseas 重跑 / consistency 实战
+
+按"做完一项→对抗 review→修"的循环，做了 3 项 + 1 个意外发现的 bug 修复。
+
+**1) 联合校准对抗 review（未改阈值）**
+
+原计划放宽 inflection / deducted_yoy 阈值。对抗 review 揭示：
+- 7 个 `not_inflection_or_trend` codes 的真实扣非 yoy 序列是 **[高, 更高]** 模式（如 002780 [348%, 871%]），是"持续高增长"非"反转"
+- 放宽阈值会产生**噪音 hit**，不是 missed candidates
+- 结论：阈值不动
+
+**2) Phase I：扣非数据修复（review 发现的真 bug）**
+
+对抗 review 时发现 50/50 codes 的 `deducted_net_profit` 全 NULL，全部走归母 proxy：
+- 新浪标准三表 API 不返回扣非净利润（只有 32 个标准科目）
+- AkShare 的 `stock_financial_abstract` 有完整扣非历史（2011-2026）
+
+修复（commit `9767680`）：
+- `AStockSkillSource.get_financial_abstract`：Sina 全 NULL 时从 AkShare 补扣非
+- `LocalCachedSource`：检测 cache stale（deducted 全 NULL）强制走 upstream 刷新
+
+修复前/后对比（002612 朗姿股份）：
+- proxy（归母）TTM yoy: 255%
+- 真实扣非 TTM yoy: 28%
+- 误差 227pp，原 screen 决策不可信
+
+002029 七匹狼 yoy 序列：proxy [-29%] → 真实 [-87%, 146%]，确认是 textbook 反转，但被 PE 88% 挡。
+
+**3) Overseas 重跑（Phase F/G/H 后）**
+
+跑 32 codes 2025A overseas（run_id `overseas_refresh_1783831962`）：
+- hit: 1 (001325 元创股份 ratio 40.88%)
+- watch: 11 (多数 parse_warning)
+- rejected: 3, data_missing: 5
+
+对抗 review 发现：12 hit/watch 里只有 **2 个真候选**：
+- 001325 (hit): ratio 41%, all_thresholds_met ✓
+- 001288 (Phase G SUM 修复): ratio 56.48% (10.09 yi), final_score 0.254→0.457
+
+其他 10 个 watch 的 ratio 都 <20%，watch 是因 parse_warning flag，非真候选。Signal-to-noise 17%。
+
+002085 万丰奥威：Phase H "其他国家和地区" 关键词修复后 ratio 0→47.7%，但 PE 25.5 > 25 阈值被 reject。策略正确。
+
+**4) P2-4 consistency 实战**
+
+对 overseas_refresh run 跑 consistency CLI：12 codes → 11 warn / 0 error。
+
+对抗 review 发现：
+- **001288 EPS 偏差 134%**：研报预测 1.97 vs 实际 0.84，分析师严重误判（真信号）
+- **9 个"无研报覆盖"**：002011 盾安环境 21.7yi 海外+0 研报是真"被忽视"信号
+- 1 个有研报但不提海外
+- 文案正确区分"无研报"vs"研报不提"
+
+设计选择：所有 consistency observation 默认 warn（软信号）。可优化：EPS 偏差>100% 升 error，但非 bug。
+
 ## 3. 下一步命令
 
 ```bash
