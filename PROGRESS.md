@@ -391,6 +391,35 @@ CREATE TABLE evidence_claims (
 - P3: 0（8 verified skip + 300230 修复入库）
 - 已跳过纯内销：8 只
 
+### 1.16 Phase H2：分地区表语境升级 confidence（P2 清零）
+
+剩余 2 个 P2 `low_confidence`（000019 / 000829）人工核对：值都正确，但 confidence 被降为 medium。
+
+**根因**（000829 为例）：p20 分地区表用"东区/南区/北区/海外"四分法，`DOMESTIC_KEYWORDS` 含华北/华东/华南/... 但不含东区/南区/北区。parser 的 `page_confidence = high if has_domestic and has_overseas else medium` 因此判 medium。
+
+**修复**（`src/collectors/annual_report_parser.py::_extract_from_page`）：增加第三种 high 触发条件——页面含"分地区"/"分区域"标题 + 境外关键词时也升 high。分地区表语境下境外行可信，不依赖境内分区名。
+
+**结果**：
+
+| code-year | 旧 | 新 | 备注 |
+|---|---|---|---|
+| 000019 2024 | high | high | DB 已是 high，PDF 复核一致 |
+| 000019 2025 | medium | **high** | 重新 import 后升 high |
+| 000829 2024 | medium | **high** | 分地区表语境升级 |
+| 000829 2025 | medium | **high** | 同上 |
+
+**测试**：
+- `test_phase_h2_region_table_header_upgrades_confidence`：东区/南区/北区/海外 表 → high
+- `test_phase_h2_no_region_table_stays_medium`：无"分地区"标题时仍 medium（保守）
+- 2 条新 golden case（000019 / 000829 2025）+ 全套 `pytest -q`：452 passed
+- `RUN_PDF_GOLDEN=1` 跑 17 条真实 PDF golden 全过（277s）
+
+**parser-review 进展**：issues 7（Phase H 后）→ **5**（Phase H2 后）：
+- P1: 5（全部 golden case 覆盖，值正确，信息性警告）
+- P2: 0 ✓
+- P3: 0 ✓
+- 已跳过纯内销：8 只
+
 ## 3. 下一步命令
 
 ```bash

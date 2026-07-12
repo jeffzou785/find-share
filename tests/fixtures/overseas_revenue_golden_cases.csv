@@ -15,4 +15,6 @@ code,name,year,pdf_path,expected_status,expected_best_yi_min,expected_best_yi_ma
 603086,先达股份,2025,data/pdfs/annual_reports/603086_2025_annual_report.pdf,fixed,13.0,13.6,13.0,13.6,,Phase G: SUM 直接出口 10.09 + 间接出口 3.30 (sub-types of 出口)
 603969,银龙股份,2025,data/pdfs/annual_reports/603969_2025_annual_report.pdf,fixed,6.0,6.4,6.0,6.4,,P1.5-2 chose_smaller: 境外 6.18yi picked (32.06 is total revenue misgrab)
 300230,永利股份,2025,data/pdfs/annual_reports/300230_2025_annual_report.pdf,fixed,11.8,12.2,11.8,12.2,,Phase H: add 其他地区 keyword (was pure_domestic mis-classify, real overseas=11.97yi)
+000019,深粮控股,2025,data/pdfs/annual_reports/000019_2025_annual_report.pdf,fixed,0.25,0.32,0.25,0.32,,Phase H2: 分地区+海外 → high conf (was medium, stale DB value)
+000829,天音控股,2025,data/pdfs/annual_reports/000829_2025_annual_report.pdf,fixed,51.0,52.5,51.0,52.5,,Phase H2: 分地区+海外 → high conf (东区/南区/北区 not in DOMESTIC_KEYWORDS)
 

@@ -234,7 +234,15 @@ def _extract_from_page(
     # 该页是否同时含境内+境外（决定 confidence）
     has_domestic = any(kw in text for kw in DOMESTIC_KEYWORDS)
     has_overseas_section = any(kw in text for kw in OVERSEAS_KEYWORDS)
-    page_confidence = "high" if has_domestic and has_overseas_section else "medium"
+    # Phase H：分地区表 + 境外行也视为 high（部分公司用东区/南区/北区等非标准境内分区名，
+    # DOMESTIC_KEYWORDS 匹配不到，但只要在分地区表语境下出现境外行就足够可信）
+    has_region_table = "分地区" in text or "分区域" in text
+    page_confidence = (
+        "high"
+        if (has_domestic and has_overseas_section)
+        or (has_region_table and has_overseas_section)
+        else "medium"
+    )
 
     def _make_record(
         region: str, revenue: float, unit: str,

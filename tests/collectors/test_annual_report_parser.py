@@ -116,6 +116,35 @@ class TestConfidence:
         assert records[0].revenue_yuan == 7625585408.18
         assert records[0].confidence == "high"
 
+    def test_phase_h2_region_table_header_upgrades_confidence(self):
+        """Phase H2：分地区表 + 境外行 → high conf，即便境内用东区/南区/北区等非标准词。
+
+        000829 真实案例：DOMESTIC_KEYWORDS 不含东区/南区/北区，原逻辑降为 medium。
+        修复：检测到"分地区"标题时也升 high（分地区表语境下境外行可信）。
+        """
+        rows = [
+            ["东区", "37,805,125,901.15"],
+            ["南区", "28,524,567,504.99"],
+            ["北区", "15,230,513,597.30"],
+            ["海外", "5,197,557,979.43"],
+        ]
+        records = _extract_from_page(
+            [rows], "分地区 东区 南区 北区 海外 单位：元", page_num=1, page_unit="元"
+        )
+        assert len(records) == 1
+        assert records[0].region_name == "海外"
+        assert records[0].confidence == "high"
+
+    def test_phase_h2_no_region_table_stays_medium(self):
+        """Phase H2：无"分地区"标题 + 无境内关键词 → 仍 medium（保守）。"""
+        rows = [["海外", "5,197,557,979.43"]]
+        # 没有"分地区"也没有 DOMESTIC_KEYWORDS
+        records = _extract_from_page(
+            [rows], "公司海外业务布局 单位：元", page_num=1, page_unit="元"
+        )
+        assert len(records) == 1
+        assert records[0].confidence == "medium"
+
 
 # === 跨页 \\n 修复 ===
 
